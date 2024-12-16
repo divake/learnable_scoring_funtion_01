@@ -17,11 +17,11 @@ class Config:
     hidden_dims: list = None  # Will be set to [64, 32] by default
     
     # Training parameters
-    num_epochs: int = 100
+    num_epochs: int = 50
     batch_size: int = 128
     learning_rate: float = 0.001
     lambda1: float = 1.0  # Coverage loss weight
-    lambda2: float = 0.1  # Set size loss weight
+    lambda2: float = 1.0  # Set size loss weight
     target_coverage: float = 0.9
     
     def __post_init__(self):

@@ -5,37 +5,65 @@
 import torch
 import torch.nn as nn
 
+
 class ScoringFunction(nn.Module):
     def __init__(self, input_dim=1, hidden_dims=[64, 32], output_dim=1):
-        """
-        Class agnostic scoring function that takes a single probability and outputs a score
-        """
         super().__init__()
+        
+        def init_weights(m):
+            if isinstance(m, nn.Linear):
+                # Initialize to approximate 1-x function initially
+                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    m.bias.data.fill_(0.1)  # Small positive bias
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0.0)
         
         layers = []
         prev_dim = input_dim
         
-        for hidden_dim in hidden_dims:
+        # First layer to approximate 1-x
+        first_layer = nn.Linear(prev_dim, hidden_dims[0])
+        nn.init.constant_(first_layer.weight, -1.0)  # Initialize to approximate 1-x
+        nn.init.constant_(first_layer.bias, 1.0)
+        
+        layers.append(first_layer)
+        layers.append(nn.BatchNorm1d(hidden_dims[0]))
+        layers.append(nn.ReLU())
+        
+        # Remaining layers
+        for i in range(len(hidden_dims)-1):
             layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                nn.BatchNorm1d(hidden_dim),
+                nn.Linear(hidden_dims[i], hidden_dims[i+1]),
+                nn.BatchNorm1d(hidden_dims[i+1]),
                 nn.ReLU()
             ])
-            prev_dim = hidden_dim
-            
-        layers.extend([
-            nn.Linear(prev_dim, output_dim),
-            nn.Softplus()  # Ensure positive scores with smooth gradients
-        ])
+        
+        # Final layer with careful initialization
+        final_layer = nn.Linear(hidden_dims[-1], output_dim)
+        nn.init.constant_(final_layer.weight, 0.1)  # Small positive weights
+        nn.init.constant_(final_layer.bias, 0.1)    # Small positive bias
+        layers.append(final_layer)
+        
+        # Use Softplus instead of ReLU for final activation
+        layers.append(nn.Softplus(beta=5))  # Higher beta for sharper transition
         
         self.network = nn.Sequential(*layers)
-    
+        
+        # Apply initialization to remaining layers
+        for m in self.network[3:]:  # Skip first layer which we initialized specially
+            if isinstance(m, (nn.Linear, nn.BatchNorm1d)):
+                init_weights(m)
+
     def forward(self, x):
         """
+        Forward pass to compute non-conformity scores
+        
         Args:
-            x: single probability value [batch_size, 1]
+            x: Input tensor of shape (batch_size, 1) containing softmax probabilities
         Returns:
-            score: [batch_size, 1]
+            Non-conformity scores of shape (batch_size, 1)
         """
         return self.network(x)
 

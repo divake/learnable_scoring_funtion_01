@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import numpy as np
 import torch.optim as optim
 from tqdm import tqdm
 import logging
@@ -15,10 +16,11 @@ from utils.visualization import (plot_training_curves, plot_score_distributions,
 from models.scoring_function import ScoringFunction, ConformalPredictor
 from training.trainer import ScoringFunctionTrainer
 from cifar_split import setup_cifar10
-from utils.early_stopping import EarlyStopping  # Add this line
+from utils.early_stopping import EarlyStopping
 from torch.optim.lr_scheduler import OneCycleLR
 from utils.visualization import (plot_training_curves, plot_score_distributions,
-                               plot_set_size_distribution, plot_scoring_function_behavior)  # Added new function
+                               plot_set_size_distribution, plot_scoring_function_behavior)
+from utils.seed import set_seed
 
 def setup_logging(config):
     """Setup logging configuration."""
@@ -33,6 +35,9 @@ def setup_logging(config):
     )
 
 def main():
+    # Set seed
+    set_seed(42)
+
     # Load configuration
     config = Config()
     setup_logging(config)
@@ -77,8 +82,8 @@ def main():
         max_lr=0.001,
         epochs=config.num_epochs,
         steps_per_epoch=len(train_loader),
-        pct_start=0.3,
-        div_factor=10,
+        pct_start=0.2,  # Longer warm-up
+        div_factor=20,
         final_div_factor=100,
         anneal_strategy='cos'
     )
@@ -166,12 +171,67 @@ def main():
             logging.info("Early stopping triggered!")
             break
     
+    # In main.py, after training completes and before final logging
+
     logging.info("Training completed!")
-    
-    # Plot final scoring function behavior
+
+    # Load best model for final evaluation
+    scoring_fn.load_state_dict(torch.load(os.path.join(config.model_dir, 'scoring_function_best.pth')))
+
+    # Collect data for distributions
+    true_scores = []
+    false_scores = []
+    set_sizes = []
+
+    scoring_fn.eval()
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs = inputs.to(config.device)
+            targets = targets.to(config.device)
+            
+            # Get probabilities
+            logits = base_model(inputs)
+            probs = torch.softmax(logits, dim=1)
+            
+            # Get scores for all classes
+            scores = torch.zeros_like(probs, device=config.device)
+            for i in range(probs.size(1)):
+                class_probs = probs[:, i:i+1]
+                scores[:, i:i+1] = scoring_fn(class_probs)
+            
+            # Collect true class scores
+            true_class_scores = scores[torch.arange(len(targets)), targets].cpu().numpy()
+            true_scores.extend(true_class_scores)
+            
+            # Collect false class scores (all other classes)
+            mask = torch.ones_like(scores, dtype=bool)
+            mask[torch.arange(len(targets)), targets] = False
+            false_class_scores = scores[mask].cpu().numpy()
+            false_scores.extend(false_class_scores)
+            
+            # Compute set sizes using the final tau
+            pred_sets = (scores <= tau).sum(dim=1)
+            set_sizes.extend(pred_sets.cpu().numpy())
+
+    # Plot all distributions
+    logging.info("Plotting score distributions...")
+    plot_score_distributions(
+        true_scores=np.array(true_scores),
+        false_scores=np.array(false_scores),
+        tau=tau,
+        save_dir=config.plot_dir
+    )
+
+    logging.info("Plotting set size distribution...")
+    plot_set_size_distribution(
+        set_sizes=np.array(set_sizes),
+        save_dir=config.plot_dir
+    )
+
+    # Plot scoring function behavior last
     logging.info("Plotting scoring function behavior...")
     plot_scoring_function_behavior(scoring_fn, config.device, config.plot_dir)
-    
+
     logging.info("All visualizations saved!")
 
 if __name__ == "__main__":
