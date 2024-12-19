@@ -5,17 +5,13 @@ import numpy as np
 
 def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9):
     """
-    Compute tau threshold for desired coverage on calibration set
-    
-    Args:
-        cal_loader: Calibration data loader
-        scoring_fn: Scoring function model
-        base_model: Base classifier model
-        device: Device to run computation on
-        coverage_target: Desired coverage level
-    Returns:
-        tau: Threshold for prediction sets
+    Compute tau threshold for desired coverage on calibration set with constraints and smoothing
     """
+    # Constants for tau bounds
+    tau_min = 0.1
+    tau_max = 0.9
+    window_size = 5  # For smoothing
+    
     scoring_fn.eval()
     base_model.eval()
     all_scores = []
@@ -38,10 +34,21 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9)
             all_labels.append(targets.cpu())
     
     # Concatenate all scores and labels
-    all_scores = torch.cat(all_scores, dim=0)
+    all_scores = torch.cat(all_scores, dim=0).squeeze()
     
-    # Compute quantile
-    tau = torch.quantile(all_scores.squeeze(), coverage_target)
+    # Sort scores for quantile computation
+    sorted_scores, _ = torch.sort(all_scores)
+    
+    # Compute index for the desired quantile
+    idx = int(coverage_target * len(sorted_scores))
+    
+    # Apply smoothing around the quantile
+    start_idx = max(0, idx - window_size)
+    end_idx = min(len(sorted_scores), idx + window_size)
+    tau = sorted_scores[start_idx:end_idx].mean().item()
+    
+    # Clamp tau to reasonable range
+    tau = max(tau_min, min(tau_max, tau))
     
     return tau
 

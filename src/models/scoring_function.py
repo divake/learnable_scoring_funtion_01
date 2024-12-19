@@ -1,7 +1,5 @@
 # src/models/scoring_function.py
 
-# src/models/scoring_function.py
-
 import torch
 import torch.nn as nn
 
@@ -12,60 +10,61 @@ class ScoringFunction(nn.Module):
         
         def init_weights(m):
             if isinstance(m, nn.Linear):
-                # Initialize to approximate 1-x function initially
-                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                # More conservative initialization
+                nn.init.normal_(m.weight, mean=0.0, std=0.01)
                 if m.bias is not None:
-                    m.bias.data.fill_(0.1)  # Small positive bias
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.constant_(m.weight, 1.0)
-                nn.init.constant_(m.bias, 0.0)
+                    m.bias.data.fill_(0.5)
         
         layers = []
         prev_dim = input_dim
         
-        # First layer to approximate 1-x
+        # First layer specifically initialized to approximate 1-x
         first_layer = nn.Linear(prev_dim, hidden_dims[0])
         nn.init.constant_(first_layer.weight, -1.0)  # Initialize to approximate 1-x
         nn.init.constant_(first_layer.bias, 1.0)
         
         layers.append(first_layer)
         layers.append(nn.BatchNorm1d(hidden_dims[0]))
-        layers.append(nn.ReLU())
+        layers.append(nn.LeakyReLU(0.1))  # Use LeakyReLU for more stable gradients
         
-        # Remaining layers
+        # Hidden layers with dropout
         for i in range(len(hidden_dims)-1):
             layers.extend([
                 nn.Linear(hidden_dims[i], hidden_dims[i+1]),
                 nn.BatchNorm1d(hidden_dims[i+1]),
-                nn.ReLU()
+                nn.LeakyReLU(0.1),
+                nn.Dropout(0.2)  # Add dropout for regularization
             ])
         
-        # Final layer with careful initialization
+        # Final layer with bounded initialization
         final_layer = nn.Linear(hidden_dims[-1], output_dim)
-        nn.init.constant_(final_layer.weight, 0.1)  # Small positive weights
-        nn.init.constant_(final_layer.bias, 0.1)    # Small positive bias
+        nn.init.uniform_(final_layer.weight, -0.01, 0.01)
+        nn.init.constant_(final_layer.bias, 0.5)
         layers.append(final_layer)
         
-        # Use Softplus instead of ReLU for final activation
-        layers.append(nn.Softplus(beta=5))  # Higher beta for sharper transition
+        # Use Softplus with higher beta for sharper transitions
+        layers.append(nn.Softplus(beta=10))
         
         self.network = nn.Sequential(*layers)
         
-        # Apply initialization to remaining layers
-        for m in self.network[3:]:  # Skip first layer which we initialized specially
+        # Skip initialization of first layer which we set manually
+        for m in self.network[3:]:  
             if isinstance(m, (nn.Linear, nn.BatchNorm1d)):
                 init_weights(m)
-
-    def forward(self, x):
-        """
-        Forward pass to compute non-conformity scores
         
-        Args:
-            x: Input tensor of shape (batch_size, 1) containing softmax probabilities
-        Returns:
-            Non-conformity scores of shape (batch_size, 1)
-        """
-        return self.network(x)
+        self.l2_lambda = 0.1  # Stronger L2 regularization
+        
+    def forward(self, x):
+        scores = self.network(x)
+        
+        # Add L2 regularization
+        l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
+        self.l2_reg = self.l2_lambda * l2_reg
+        
+        # Force output to be reasonable
+        scores = torch.clamp(scores, min=0.0, max=1.0)
+        
+        return scores
 
 class ConformalPredictor:
     def __init__(self, base_model, scoring_fn, num_classes=10):
