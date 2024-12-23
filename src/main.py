@@ -49,11 +49,14 @@ def main():
     
     # Load pretrained ResNet model
     base_model = models.resnet18(weights=None)
-    base_model.fc = nn.Linear(base_model.fc.in_features, 10)
+    # Match the architecture used during training
+    base_model.fc = nn.Sequential(
+        nn.Dropout(0.2),
+        nn.Linear(base_model.fc.in_features, 10)
+    )
     base_model.load_state_dict(torch.load(os.path.join(config.model_dir, 'resnet18_cifar10_best.pth')))
     base_model = base_model.to(config.device)
     base_model.eval()
-    logging.info("Base model loaded successfully")
     
     # Initialize scoring function
     scoring_fn = ScoringFunction(
