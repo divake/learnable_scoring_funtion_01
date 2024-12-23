@@ -19,10 +19,10 @@ class ScoringFunctionTrainer:
         self.lambda2 = lambda2
         
         # Constants
-        self.tau_min = 0.1
-        self.tau_max = 0.6  # Reduced max tau
-        self.score_margin = 0.2  # Increased margin
-        self.target_size = 1.2  # Target set size
+        self.tau_min = 0.2
+        self.tau_max = 0.9  # Reduced max tau
+        self.score_margin = 0.1  # Increased margin
+        self.target_size = 1.0  # Target set size
         self.max_size = 3.0  # Maximum allowed set size
 
     def train_epoch(self, optimizer, tau):
