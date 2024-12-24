@@ -7,7 +7,7 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     # Paths
-    base_dir: str = '/ssd1/divake/learnable_scoring_fn'
+    base_dir: str = '/mnt/ssd1/divake/learnable_scoring_fn'
     data_dir: str = 'data'
     model_dir: str = 'models'
     plot_dir: str = 'plots'

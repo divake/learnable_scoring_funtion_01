@@ -58,11 +58,10 @@ def main():
     base_model = base_model.to(config.device)
     base_model.eval()
     
-    # Initialize scoring function
+    # Update scoring function initialization
     scoring_fn = ScoringFunction(
-        input_dim=1,
-        hidden_dims=config.hidden_dims,
-        output_dim=1
+        input_dim=10,  # Number of classes
+        hidden_dims=config.hidden_dims
     ).to(config.device)
     logging.info("Scoring function initialized")
     
@@ -196,11 +195,8 @@ def main():
             logits = base_model(inputs)
             probs = torch.softmax(logits, dim=1)
             
-            # Get scores for all classes
-            scores = torch.zeros_like(probs, device=config.device)
-            for i in range(probs.size(1)):
-                class_probs = probs[:, i:i+1]
-                scores[:, i:i+1] = scoring_fn(class_probs)
+            # Get scores for all classes at once
+            scores = scoring_fn(probs)  # [batch_size, num_classes]
             
             # Collect true class scores
             true_class_scores = scores[torch.arange(len(targets)), targets].cpu().numpy()

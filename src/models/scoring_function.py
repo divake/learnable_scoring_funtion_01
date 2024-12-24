@@ -5,66 +5,69 @@ import torch.nn as nn
 
 
 class ScoringFunction(nn.Module):
-    def __init__(self, input_dim=1, hidden_dims=[64, 32], output_dim=1):
+    def __init__(self, input_dim=10, hidden_dims=[64, 32]):  # Removed output_dim parameter
         super().__init__()
         
-        def init_weights(m):
+        self.network = nn.Sequential(
+            # First layer
+            nn.Linear(input_dim, hidden_dims[0]),
+            nn.BatchNorm1d(hidden_dims[0]),
+            nn.ReLU(),
+            
+            # Second layer
+            nn.Linear(hidden_dims[0], hidden_dims[1]),
+            nn.BatchNorm1d(hidden_dims[1]),
+            nn.ReLU(),
+            
+            # Output layer - outputs scores for all classes
+            nn.Linear(hidden_dims[1], input_dim)  # Changed to input_dim to match number of classes
+        )
+        
+        # Initialize weights
+        for m in self.modules():
             if isinstance(m, nn.Linear):
-                # More conservative initialization
-                nn.init.normal_(m.weight, mean=0.0, std=0.01)
+                nn.init.kaiming_normal_(m.weight)
                 if m.bias is not None:
-                    m.bias.data.fill_(0.5)
+                    nn.init.zeros_(m.bias)
         
-        layers = []
-        prev_dim = input_dim
-        
-        # First layer specifically initialized to approximate 1-x
-        first_layer = nn.Linear(prev_dim, hidden_dims[0])
-        nn.init.constant_(first_layer.weight, -1.0)  # Initialize to approximate 1-x
-        nn.init.constant_(first_layer.bias, 1.0)
-        
-        layers.append(first_layer)
-        layers.append(nn.BatchNorm1d(hidden_dims[0]))
-        layers.append(nn.LeakyReLU(0.1))  # Use LeakyReLU for more stable gradients
-        
-        # Hidden layers with dropout
-        for i in range(len(hidden_dims)-1):
-            layers.extend([
-                nn.Linear(hidden_dims[i], hidden_dims[i+1]),
-                nn.BatchNorm1d(hidden_dims[i+1]),
-                nn.LeakyReLU(0.1),
-                nn.Dropout(0.2)  # Add dropout for regularization
-            ])
-        
-        # Final layer with bounded initialization
-        final_layer = nn.Linear(hidden_dims[-1], output_dim)
-        nn.init.uniform_(final_layer.weight, -0.01, 0.01)
-        nn.init.constant_(final_layer.bias, 0.5)
-        layers.append(final_layer)
-        
-        # Use Softplus with higher beta for sharper transitions
-        layers.append(nn.Softplus(beta=10))
-        
-        self.network = nn.Sequential(*layers)
-        
-        # Skip initialization of first layer which we set manually
-        for m in self.network[3:]:  
-            if isinstance(m, (nn.Linear, nn.BatchNorm1d)):
-                init_weights(m)
-        
-        self.l2_lambda = 0.1  # Stronger L2 regularization
-        
+        self.l2_lambda = 0.01
+    
+    def process_probs_for_class(self, probs):
+        """
+        Process the full probability distribution for scoring
+        Args:
+            probs: Tensor of shape [batch_size, num_classes] containing softmax probabilities
+        Returns:
+            Processed probabilities
+        """
+        return probs  # Return full distribution
+    
     def forward(self, x):
-        scores = self.network(x)
+        """
+        Forward pass
+        Args:
+            x: Tensor of shape [batch_size, num_classes] containing softmax probabilities
+        Returns:
+            Scores of shape [batch_size, num_classes]
+        """
+        # Ensure input has correct shape
+        if len(x.shape) == 1:
+            x = x.unsqueeze(0)
+        elif len(x.shape) > 2:
+            raise ValueError(f"Expected 2D input tensor, got shape {x.shape}")
+            
+        # Scale input to [-1, 1] range
+        x = 2 * x - 1
         
-        # Add L2 regularization
+        # Network forward pass
+        x = self.network(x)
+        
+        # L2 regularization
         l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
         self.l2_reg = self.l2_lambda * l2_reg
         
-        # Force output to be reasonable
-        scores = torch.clamp(scores, min=0.0, max=1.0)
-        
-        return scores
+        # Bounded output in [0, 1]
+        return torch.sigmoid(x)  # Will return [batch_size, num_classes]
 
 class ConformalPredictor:
     def __init__(self, base_model, scoring_fn, num_classes=10):

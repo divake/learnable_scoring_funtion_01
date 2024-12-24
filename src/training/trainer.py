@@ -6,9 +6,15 @@ import torch.optim as optim
 from tqdm import tqdm
 from utils.metrics import AverageMeter
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+from utils.metrics import AverageMeter
+
 class ScoringFunctionTrainer:
     def __init__(self, base_model, scoring_fn, train_loader, cal_loader, 
-                 test_loader, device, lambda1=1.0, lambda2=2.0):  # Increased lambda2
+                 test_loader, device, lambda1=1.0, lambda2=2.0):
         self.base_model = base_model
         self.scoring_fn = scoring_fn
         self.train_loader = train_loader
@@ -19,20 +25,17 @@ class ScoringFunctionTrainer:
         self.lambda2 = lambda2
         
         # Constants
-        self.tau_min = 0.2
-        self.tau_max = 0.9  # Reduced max tau
-        self.score_margin = 0.1  # Increased margin
-        self.target_size = 1.0  # Target set size
-        self.max_size = 3.0  # Maximum allowed set size
+        self.tau_min = 0.1
+        self.tau_max = 0.7
+        self.score_margin = 0.1
+        self.target_size = 1.0
+        self.max_size = 3.0
 
     def train_epoch(self, optimizer, tau):
         self.scoring_fn.train()
         loss_meter = AverageMeter()
         coverage_meter = AverageMeter()
         size_meter = AverageMeter()
-        
-        # Clamp tau to reasonable range
-        tau = max(self.tau_min, min(self.tau_max, tau))
         
         pbar = tqdm(self.train_loader)
         for inputs, targets in pbar:
@@ -42,60 +45,47 @@ class ScoringFunctionTrainer:
             
             with torch.no_grad():
                 logits = self.base_model(inputs)
-                probs = torch.softmax(logits, dim=1)
+                probs = torch.softmax(logits, dim=1)  # [batch_size, 10]
             
-            scores = torch.zeros_like(probs, device=self.device)
-            for i in range(probs.size(1)):
-                class_probs = probs[:, i:i+1]
-                scores[:, i:i+1] = self.scoring_fn(class_probs)
-            
+            # Get scores for all classes at once
+            scores = self.scoring_fn(probs)  # [batch_size, 10]
+                
             # Get true and false class scores
             target_scores = scores[torch.arange(batch_size), targets]
             mask = torch.ones_like(scores, dtype=bool)
             mask[torch.arange(batch_size), targets] = False
             false_scores = scores[mask].view(batch_size, -1)
             
-            # Stronger margin loss
-            margin_loss = torch.relu(target_scores - false_scores.min(dim=1)[0] + self.score_margin).mean()
+            # Coverage loss with smooth transition
+            coverage_error = torch.mean(torch.relu(target_scores - tau))
             
-            # Coverage loss with smoother transition
-            coverage_indicators = torch.sigmoid(20.0 * (tau - target_scores))  # Reduced temperature
-            coverage = coverage_indicators.mean()
+            # Margin loss with distribution-aware weighting
+            margin_loss = torch.mean(torch.relu(
+                target_scores.unsqueeze(1) - false_scores + self.score_margin
+            ))
             
-            # Size penalty with stricter control
-            pred_sets = scores <= tau
-            set_sizes = pred_sets.float().sum(dim=1)
-            avg_size = set_sizes.mean()
+            # Size control
+            pred_sets = (scores <= tau).float()
+            set_sizes = pred_sets.sum(dim=1)
+            size_penalty = torch.mean((set_sizes - self.target_size) ** 2)
             
-            # Progressive size penalty
-            size_deviation = torch.abs(avg_size - self.target_size)
-            quadratic_penalty = size_deviation ** 2
-            exp_penalty = torch.exp(torch.relu(avg_size - self.max_size))
-            size_penalty = quadratic_penalty + 0.1 * exp_penalty
-            
-            # Separation loss to encourage score spread
-            score_spread = false_scores.mean(dim=1) - target_scores
-            spread_loss = torch.relu(self.score_margin - score_spread).mean()
-            
-            # Combined loss with balanced terms
+            # Combined loss with dynamic weighting
             loss = (
-                self.lambda1 * (1 - coverage) +  # Coverage term
-                self.lambda2 * size_penalty +    # Size penalty
-                0.2 * margin_loss +             # Increased margin weight
-                0.1 * spread_loss +             # Added spread loss
-                0.01 * self.scoring_fn.l2_reg   # Reduced L2 weight
+                2.0 * coverage_error +  # Coverage is important
+                1.0 * margin_loss +     # Encourage separation
+                0.5 * size_penalty +    # Control set size
+                0.01 * self.scoring_fn.l2_reg  # L2 regularization
             )
             
             optimizer.zero_grad()
             loss.backward()
-            # Reduced gradient clipping for stability
             torch.nn.utils.clip_grad_norm_(self.scoring_fn.parameters(), max_norm=0.5)
             optimizer.step()
             
-            # Update meters with exact metrics
+            # Update metrics
             with torch.no_grad():
                 exact_coverage = (target_scores <= tau).float().mean()
-                exact_size = pred_sets.float().sum(dim=1).mean()
+                exact_size = set_sizes.mean()
                 
                 loss_meter.update(loss.item())
                 coverage_meter.update(exact_coverage.item())
@@ -109,8 +99,9 @@ class ScoringFunctionTrainer:
         
         return loss_meter.avg, coverage_meter.avg, size_meter.avg
 
+
+
     def evaluate(self, loader, tau):
-        """Evaluate model"""
         self.scoring_fn.eval()
         coverage_meter = AverageMeter()
         size_meter = AverageMeter()
@@ -119,20 +110,22 @@ class ScoringFunctionTrainer:
             for inputs, targets in loader:
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
+                batch_size = inputs.size(0)
                 
+                # Get probabilities
                 logits = self.base_model(inputs)
                 probs = torch.softmax(logits, dim=1)
                 
-                scores = torch.zeros_like(probs, device=self.device)
-                for i in range(probs.size(1)):
-                    class_probs = probs[:, i:i+1]
-                    scores[:, i:i+1] = self.scoring_fn(class_probs)
+                # Get scores for all classes at once
+                scores = self.scoring_fn(probs)  # [batch_size, num_classes]
                 
-                target_scores = scores[torch.arange(len(targets)), targets]
+                # Get target scores
+                target_scores = scores[torch.arange(batch_size), targets]
                 coverage = (target_scores <= tau).float().mean()
                 
-                pred_sets = scores <= tau
-                set_sizes = pred_sets.float().sum(dim=1)
+                # Compute set sizes
+                pred_sets = (scores <= tau).float()
+                set_sizes = pred_sets.sum(dim=1)
                 avg_size = set_sizes.mean()
                 
                 coverage_meter.update(coverage.item())

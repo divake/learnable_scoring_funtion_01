@@ -51,41 +51,62 @@ def plot_training_curves(epochs, train_losses, train_coverages, train_sizes,
     plt.close()
 
 def plot_scoring_function_behavior(scoring_fn, device, save_dir):
-    """Plot the learned scoring function behavior."""
-    # Create input range from 0 to 1
-    softmax_scores = torch.linspace(0, 1, 1000, device=device).reshape(-1, 1)
+    """Plot the learned scoring function behavior for each class."""
+    num_classes = 10
+    num_points = 1000
     
-    # Get non-conformity scores
-    with torch.no_grad():
-        nonconf_scores = scoring_fn(softmax_scores).cpu().numpy()
+    plt.figure(figsize=(20, 15))
     
-    plt.figure(figsize=(10, 6))
-    plt.plot(softmax_scores.cpu().numpy(), nonconf_scores)
-    plt.xlabel('Softmax Score')
-    plt.ylabel('Non-conformity Score')
-    plt.title('Learned Scoring Function Behavior')
-    plt.grid(True)
+    # Create a base probability distribution
+    base_probs = torch.zeros((num_points, num_classes), device=device)
+    x = torch.linspace(0, 1, num_points, device=device)
     
-    # Add reference line y=1-x for comparison
-    ref_line = 1 - softmax_scores.cpu().numpy()
-    plt.plot(softmax_scores.cpu().numpy(), ref_line, '--', label='1-p (reference)')
+    # Plot for each class
+    for class_idx in range(num_classes):
+        plt.subplot(3, 4, class_idx + 1)
+        
+        # Create probability distributions with varying probability for the current class
+        probs = base_probs.clone()
+        probs[:, class_idx] = x
+        
+        # Distribute remaining probability equally among other classes
+        remaining_prob = (1 - x) / (num_classes - 1)
+        for other_idx in range(num_classes):
+            if other_idx != class_idx:
+                probs[:, other_idx] = remaining_prob
+        
+        # Get scores
+        with torch.no_grad():
+            scores = scoring_fn(probs)
+        
+        # Plot scores for the current class
+        plt.plot(x.cpu().numpy(), scores[:, class_idx].cpu().numpy(), 
+                label=f'Learned Score', color='blue')
+        plt.plot(x.cpu().numpy(), 1-x.cpu().numpy(), '--', 
+                label='1-p (reference)', color='orange')
+        
+        plt.xlabel(f'Class {class_idx} Probability')
+        plt.ylabel('Non-conformity Score')
+        plt.title(f'Scoring Function for Class {class_idx}')
+        plt.grid(True)
+        if class_idx == 0:  # Only show legend for first plot
+            plt.legend()
     
-    plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'scoring_function.png'))
+    plt.savefig(os.path.join(save_dir, 'scoring_function_by_class.png'))
     plt.close()
 
 def plot_score_distributions(true_scores, false_scores, tau, save_dir):
-    """Plot distribution of conformity scores."""
+    """Plot distribution of non-conformity scores."""
     plt.figure(figsize=(10, 6))
     
     sns.kdeplot(true_scores, label='True Class Scores')
     sns.kdeplot(false_scores, label='False Class Scores')
     plt.axvline(x=tau, color='r', linestyle='--', label='Tau Threshold')
     
-    plt.xlabel('Conformity Score')
+    plt.xlabel('Non-Conformity Score')
     plt.ylabel('Density')
-    plt.title('Distribution of Conformity Scores')
+    plt.title('Distribution of Non-Conformity Scores')
     plt.legend()
     
     plt.tight_layout()
