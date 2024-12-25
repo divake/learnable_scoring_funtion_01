@@ -1,5 +1,3 @@
-# src/main.py
-
 import torch
 import torch.nn as nn
 import numpy as np
@@ -7,20 +5,70 @@ import torch.optim as optim
 from tqdm import tqdm
 import logging
 import os
-import torchvision.models as models
+import timm
+import torchvision.transforms as transforms
 
 from utils.config import Config
 from utils.metrics import compute_coverage_and_size, compute_tau
 from utils.visualization import (plot_training_curves, plot_score_distributions,
-                               plot_set_size_distribution)
+                               plot_set_size_distribution, plot_scoring_function_behavior)
 from models.scoring_function import ScoringFunction, ConformalPredictor
 from training.trainer import ScoringFunctionTrainer
-from cifar_split import setup_cifar10
+from cifar_split import setup_cifar100
 from utils.early_stopping import EarlyStopping
 from torch.optim.lr_scheduler import OneCycleLR
-from utils.visualization import (plot_training_curves, plot_score_distributions,
-                               plot_set_size_distribution, plot_scoring_function_behavior)
 from utils.seed import set_seed
+
+def cleanup_temp_files(config):
+    """Clean up temporary and backup files"""
+    patterns = ['.tmp', '.bak']
+    for pattern in patterns:
+        temp_file = config.scoring_model_path + pattern
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+                logging.info(f"Cleaned up {temp_file}")
+            except Exception as e:
+                logging.warning(f"Could not remove {temp_file}: {e}")
+
+def save_scoring_model(model, path, backup=True):
+    """Safe model saving with backup"""
+    temp_path = path + '.tmp'
+    backup_path = path + '.bak'
+    
+    try:
+        # Save to temp file first
+        torch.save(model.state_dict(), temp_path)
+        
+        # If backup is requested and original file exists
+        if backup and os.path.exists(path):
+            os.replace(path, backup_path)
+            
+        # Move temp file to final location
+        os.replace(temp_path, path)
+        return True
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise e
+
+def load_scoring_model(model, path):
+    """Safe model loading with backup fallback"""
+    backup_path = path + '.bak'
+    
+    try:
+        # Try loading main file
+        model.load_state_dict(torch.load(path))
+        return True
+    except Exception as e:
+        if os.path.exists(backup_path):
+            try:
+                # Try loading backup
+                model.load_state_dict(torch.load(backup_path))
+                return True
+            except:
+                pass
+        raise e
 
 def setup_logging(config):
     """Setup logging configuration."""
@@ -34,34 +82,76 @@ def setup_logging(config):
         ]
     )
 
+def get_transforms():
+    """Get the transforms used during ViT training"""
+    return transforms.Compose([
+        transforms.Resize((96, 96), interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5071, 0.4867, 0.4408], 
+                           std=[0.2675, 0.2565, 0.2761])
+    ])
+
 def main():
-    # Set seed
+    # Set seed for reproducibility
     set_seed(42)
 
     # Load configuration
     config = Config()
+    
+    # Clean up any temporary files from previous runs
+    cleanup_temp_files(config)
+    
+    # Verify write permissions
+    for dir_path in [config.model_dir, config.plot_dir]:
+        try:
+            test_file = os.path.join(dir_path, 'test_write.tmp')
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+        except Exception as e:
+            raise RuntimeError(f"Cannot write to {dir_path}: {e}")
+    
     setup_logging(config)
     logging.info("Starting training process")
+    logging.info(f"Model directory: {config.model_dir}")
+    logging.info(f"Plot directory: {config.plot_dir}")
     
-    # Load data
-    train_loader, cal_loader, test_loader, _, _, _ = setup_cifar10(batch_size=config.batch_size)
-    logging.info("Data loaded successfully")
+    # Setup transforms matching ViT training
+    transform = get_transforms()
     
-    # Load pretrained ResNet model
-    base_model = models.resnet18(weights=None)
-    # Match the architecture used during training
-    base_model.fc = nn.Sequential(
-        nn.Dropout(0.2),
-        nn.Linear(base_model.fc.in_features, 10)
+    # Load data with correct transforms
+    train_loader, cal_loader, test_loader, train_dataset, cal_dataset, test_dataset = setup_cifar100(
+        batch_size=config.batch_size
     )
-    base_model.load_state_dict(torch.load(os.path.join(config.model_dir, 'resnet18_cifar10_best.pth')))
+    
+    # Update transforms
+    train_dataset.dataset.transform = transform
+    cal_dataset.dataset.transform = transform
+    test_dataset.transform = transform
+    
+    # Load pretrained ViT model with correct configuration
+    base_model = timm.create_model(
+        'vit_base_patch16_224_in21k',
+        pretrained=False,
+        num_classes=100,
+        img_size=96,
+        drop_path_rate=0.1,
+        drop_rate=0.1
+    )
+    
+    # Enable gradient checkpointing
+    base_model.set_grad_checkpointing(enable=True)
+    
+    # Load trained weights
+    base_model.load_state_dict(torch.load(config.vit_model_path))
     base_model = base_model.to(config.device)
     base_model.eval()
     
-    # Update scoring function initialization
+    # Initialize scoring function
     scoring_fn = ScoringFunction(
-        input_dim=10,  # Number of classes
-        hidden_dims=config.hidden_dims
+        input_dim=1,
+        hidden_dims=[32, 16],  # Fixed architecture
+        output_dim=1
     ).to(config.device)
     logging.info("Scoring function initialized")
     
@@ -78,20 +168,20 @@ def main():
     )
     
     # Training setup
-    optimizer = optim.AdamW(scoring_fn.parameters(), lr=0.001, weight_decay=0.01)
+    optimizer = optim.AdamW(scoring_fn.parameters(), lr=config.learning_rate, weight_decay=0.01)
     scheduler = OneCycleLR(
         optimizer,
-        max_lr=0.001,
+        max_lr=config.learning_rate,
         epochs=config.num_epochs,
         steps_per_epoch=len(train_loader),
-        pct_start=0.2,  # Longer warm-up
+        pct_start=0.2,
         div_factor=20,
         final_div_factor=100,
         anneal_strategy='cos'
     )
     
-    early_stopping = EarlyStopping(patience=10, min_delta=1e-4)
-    
+    early_stopping = EarlyStopping()
+
     # Training history
     history = {
         'epochs': [],

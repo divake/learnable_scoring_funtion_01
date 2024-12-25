@@ -1,4 +1,4 @@
-# src/training/trainer.py
+#src/training/trainer.py
 
 import torch
 import torch.nn as nn
@@ -8,6 +8,13 @@ from utils.metrics import AverageMeter
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+from utils.metrics import AverageMeter
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from tqdm import tqdm
 from utils.metrics import AverageMeter
@@ -21,15 +28,36 @@ class ScoringFunctionTrainer:
         self.cal_loader = cal_loader
         self.test_loader = test_loader
         self.device = device
-        self.lambda1 = lambda1
-        self.lambda2 = lambda2
         
-        # Constants
+        # Modified hyperparameters
+        self.target_coverage = 0.9
+        self.target_size = 1.2
+        self.margin = 0.1
+        
+        # Loss weights
+        self.coverage_weight = 1.0
+        self.margin_weight = 0.1
+        self.size_weight = 1.0
+        
+        # Bounds
         self.tau_min = 0.1
-        self.tau_max = 0.7
-        self.score_margin = 0.1
-        self.target_size = 1.0
-        self.max_size = 3.0
+        self.tau_max = 0.9
+        self.num_classes = 100
+
+    def compute_batch_scores(self, probs):
+        """Compute scores efficiently in chunks"""
+        batch_size = probs.size(0)
+        scores = torch.zeros(batch_size, self.num_classes, device=self.device)
+        
+        chunk_size = 1000
+        flat_probs = probs.reshape(-1, 1)
+        
+        for i in range(0, flat_probs.size(0), chunk_size):
+            end_idx = min(i + chunk_size, flat_probs.size(0))
+            chunk_scores = self.scoring_fn(flat_probs[i:end_idx])
+            scores.view(-1)[i:end_idx] = chunk_scores.squeeze()
+        
+        return scores
 
     def train_epoch(self, optimizer, tau):
         self.scoring_fn.train()
@@ -37,46 +65,77 @@ class ScoringFunctionTrainer:
         coverage_meter = AverageMeter()
         size_meter = AverageMeter()
         
+        # Convert tau to tensor and clamp
+        tau = torch.tensor(tau, device=self.device)
+        tau = torch.clamp(tau, self.tau_min, self.tau_max)
+        
         pbar = tqdm(self.train_loader)
         for inputs, targets in pbar:
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
             batch_size = inputs.size(0)
             
+            # Get probabilities from base model
             with torch.no_grad():
                 logits = self.base_model(inputs)
-                probs = torch.softmax(logits, dim=1)  # [batch_size, 10]
+                probs = torch.softmax(logits, dim=1)
             
-            # Get scores for all classes at once
-            scores = self.scoring_fn(probs)  # [batch_size, 10]
-                
-            # Get true and false class scores
+            # Compute scores
+            scores = self.compute_batch_scores(probs)
+            
+            # Get true class and false class scores
             target_scores = scores[torch.arange(batch_size), targets]
             mask = torch.ones_like(scores, dtype=bool)
             mask[torch.arange(batch_size), targets] = False
             false_scores = scores[mask].view(batch_size, -1)
             
-            # Coverage loss with smooth transition
-            coverage_error = torch.mean(torch.relu(target_scores - tau))
+            # Stable margin loss using softplus
+            min_false_scores = false_scores.min(dim=1)[0]
+            margin_loss = F.softplus(target_scores - min_false_scores + self.margin).mean()
             
-            # Margin loss with distribution-aware weighting
-            margin_loss = torch.mean(torch.relu(
-                target_scores.unsqueeze(1) - false_scores + self.score_margin
-            ))
+            # Smooth coverage loss
+            target_covered = (target_scores <= tau).float()
+            coverage = target_covered.mean()
+            coverage_error = coverage - self.target_coverage
+            coverage_loss = coverage_error.pow(2)
             
-            # Size control
+            # Set size computation with minimum size enforcement
             pred_sets = (scores <= tau).float()
             set_sizes = pred_sets.sum(dim=1)
-            size_penalty = torch.mean((set_sizes - self.target_size) ** 2)
             
-            # Combined loss with dynamic weighting
-            loss = (
-                2.0 * coverage_error +  # Coverage is important
-                1.0 * margin_loss +     # Encourage separation
-                0.5 * size_penalty +    # Control set size
-                0.01 * self.scoring_fn.l2_reg  # L2 regularization
+            # Enforce minimum prediction set size
+            empty_preds = set_sizes < 1.0
+            if empty_preds.any():
+                # For samples with no predictions, include the class with minimum score
+                empty_indices = torch.where(empty_preds)[0]
+                min_score_classes = scores[empty_indices].min(dim=1)[1]
+                pred_sets[empty_indices, min_score_classes] = 1.0
+                set_sizes = pred_sets.sum(dim=1)
+            
+            avg_size = set_sizes.mean()
+            
+            # Strong minimum size penalty
+            min_size_violation = F.relu(1.0 - set_sizes).mean()
+            
+            # Size deviation penalty using Huber loss plus minimum size constraint
+            size_loss = (
+                F.huber_loss(
+                    avg_size, 
+                    torch.tensor(self.target_size, device=self.device),
+                    delta=0.1
+                ) + 
+                10.0 * min_size_violation  # Strong penalty for violating minimum size
             )
             
+            # Combined loss with proper scaling
+            loss = (
+                self.coverage_weight * coverage_loss +
+                self.margin_weight * margin_loss + 
+                self.size_weight * size_loss +
+                0.001 * self.scoring_fn.l2_reg  # Reduced L2 weight
+            )
+            
+            # Optimization
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.scoring_fn.parameters(), max_norm=0.5)
@@ -84,12 +143,9 @@ class ScoringFunctionTrainer:
             
             # Update metrics
             with torch.no_grad():
-                exact_coverage = (target_scores <= tau).float().mean()
-                exact_size = set_sizes.mean()
-                
                 loss_meter.update(loss.item())
-                coverage_meter.update(exact_coverage.item())
-                size_meter.update(exact_size.item())
+                coverage_meter.update(coverage.item())
+                size_meter.update(avg_size.item())
             
             pbar.set_postfix({
                 'Loss': f'{loss_meter.avg:.3f}',
@@ -99,33 +155,35 @@ class ScoringFunctionTrainer:
         
         return loss_meter.avg, coverage_meter.avg, size_meter.avg
 
-
-
     def evaluate(self, loader, tau):
+        """Evaluate model with guaranteed minimum set size"""
         self.scoring_fn.eval()
         coverage_meter = AverageMeter()
         size_meter = AverageMeter()
         
+        # Convert tau to tensor and clamp
+        tau = torch.tensor(tau, device=self.device)
+        tau = torch.clamp(tau, self.tau_min, self.tau_max)
+            
         with torch.no_grad():
             for inputs, targets in loader:
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
-                batch_size = inputs.size(0)
                 
-                # Get probabilities
                 logits = self.base_model(inputs)
                 probs = torch.softmax(logits, dim=1)
+                scores = self.compute_batch_scores(probs)
                 
-                # Get scores for all classes at once
-                scores = self.scoring_fn(probs)  # [batch_size, num_classes]
+                # Ensure minimum set size
+                pred_sets = scores <= tau
+                empty_preds = ~pred_sets.any(dim=1)
+                if empty_preds.any():
+                    min_scores, min_indices = scores[empty_preds].min(dim=1)
+                    pred_sets[empty_preds, min_indices] = True
                 
-                # Get target scores
-                target_scores = scores[torch.arange(batch_size), targets]
+                target_scores = scores[torch.arange(len(targets)), targets]
                 coverage = (target_scores <= tau).float().mean()
-                
-                # Compute set sizes
-                pred_sets = (scores <= tau).float()
-                set_sizes = pred_sets.sum(dim=1)
+                set_sizes = pred_sets.float().sum(dim=1)
                 avg_size = set_sizes.mean()
                 
                 coverage_meter.update(coverage.item())

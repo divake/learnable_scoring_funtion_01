@@ -12,7 +12,7 @@ from src.cifar_split import setup_cifar10
 from tqdm import tqdm
 
 class EarlyStopping:
-    def __init__(self, patience=15, min_delta=1e-4):  # Increased patience and added min_delta
+    def __init__(self, patience=20, min_delta=1e-4):  # Increased patience and added min_delta
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -53,7 +53,7 @@ def train_resnet():
     num_epochs = 200  # Increased max epochs
     batch_size = 128
     initial_lr = 0.1  # Increased learning rate
-    patience = 25  # Increased patience
+    patience = 20  # Increased patience
     
     # Setup device
     device = torch.device("cuda")

@@ -1,12 +1,11 @@
-# cifar_split.py
+#src/cifar_split.py
 """
-This script handles downloading CIFAR-10, creating balanced splits, saving them,
+This script handles downloading CIFAR-100, creating balanced splits, saving them,
 and verifying class distributions. Creates splits of:
-- Training: 40,000 images (4,000 per class)
-- Calibration: 10,000 images (1,000 per class)
+- Training: 40,000 images (400 per class)
+- Calibration: 10,000 images (100 per class)
 - Test: 10,000 images (original)
 """
-
 import os
 import pickle
 import torch
@@ -14,8 +13,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset
 from collections import Counter
-
-def create_balanced_split(dataset, cal_size_per_class=1000):
+def create_balanced_split(dataset, cal_size_per_class=100):
     """
     Create balanced train-calibration split with equal samples per class.
     """
@@ -23,7 +21,7 @@ def create_balanced_split(dataset, cal_size_per_class=1000):
     train_indices = []
     cal_indices = []
     
-    for class_idx in range(10):
+    for class_idx in range(100):  # Updated to 100 classes
         # Get indices for current class
         class_indices = torch.where(targets == class_idx)[0]
         
@@ -36,7 +34,6 @@ def create_balanced_split(dataset, cal_size_per_class=1000):
         train_indices.extend(class_indices[cal_size_per_class:].tolist())
     
     return train_indices, cal_indices
-
 def save_split_indices(train_indices, cal_indices, base_path):
     """
     Save the split indices to a pickle file.
@@ -49,22 +46,20 @@ def save_split_indices(train_indices, cal_indices, base_path):
     splits_dir = os.path.join(base_path, 'data', 'splits')
     os.makedirs(splits_dir, exist_ok=True)
     
-    split_path = os.path.join(splits_dir, 'cifar10_splits.pkl')
+    split_path = os.path.join(splits_dir, 'cifar100_splits.pkl')  # Updated filename
     with open(split_path, 'wb') as f:
         pickle.dump(split_info, f)
     print(f"Split indices saved to {split_path}")
-
 def load_split_indices(base_path):
     """
     Load the split indices from pickle file.
     """
-    split_path = os.path.join(base_path, 'data', 'splits', 'cifar10_splits.pkl')
+    split_path = os.path.join(base_path, 'data', 'splits', 'cifar100_splits.pkl')  # Updated filename
     if os.path.exists(split_path):
         with open(split_path, 'rb') as f:
             split_info = pickle.load(f)
         return split_info['train_indices'], split_info['cal_indices']
     return None, None
-
 def verify_class_distribution(dataset, name="Dataset"):
     """
     Print class distribution in a dataset.
@@ -76,30 +71,32 @@ def verify_class_distribution(dataset, name="Dataset"):
         
     class_counts = Counter(targets)
     
-    classes = ('plane', 'car', 'bird', 'cat', 'deer',
-              'dog', 'frog', 'horse', 'ship', 'truck')
+    # CIFAR-100 fine labels
+    fine_labels = dataset.dataset.classes if isinstance(dataset, Subset) else dataset.classes
     
     print(f"\nClass distribution in {name}:")
-    for i in range(10):
-        print(f"{classes[i]}: {class_counts[i]} images")
-
-def setup_cifar10(base_path='/mnt/ssd1/divake/learnable_scoring_fn', batch_size=128, save_splits=True):
+    for i in range(100):  # Updated to 100 classes
+        if class_counts[i] > 0:  # Only print classes that have samples
+            print(f"{fine_labels[i]}: {class_counts[i]} images")
+def setup_cifar100(base_path='/mnt/ssd1/divake/learnable_scoring_fn', batch_size=128, save_splits=True):
     """
-    Set up CIFAR-10 dataset with balanced splits and save them.
+    Set up CIFAR-100 dataset with balanced splits and save them.
     """
     # Define transforms
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), 
-                           (0.2023, 0.1994, 0.2010))
+        transforms.Normalize(
+            mean=[0.5071, 0.4867, 0.4408],
+            std=[0.2675, 0.2565, 0.2761]
+        )
     ])
     
     # Create data directory
-    data_path = os.path.join(base_path, 'data', 'cifar10')
+    data_path = os.path.join(base_path, 'data', 'cifar100')  # Updated path
     os.makedirs(data_path, exist_ok=True)
     
     # Download and load training data
-    full_train_dataset = torchvision.datasets.CIFAR10(
+    full_train_dataset = torchvision.datasets.CIFAR100(  # Updated to CIFAR100
         root=data_path,
         train=True,
         download=True,
@@ -122,7 +119,7 @@ def setup_cifar10(base_path='/mnt/ssd1/divake/learnable_scoring_fn', batch_size=
     cal_dataset = Subset(full_train_dataset, cal_indices)
     
     # Load test dataset
-    test_dataset = torchvision.datasets.CIFAR10(
+    test_dataset = torchvision.datasets.CIFAR100(  # Updated to CIFAR100
         root=data_path,
         train=False,
         download=True,
@@ -155,10 +152,9 @@ def setup_cifar10(base_path='/mnt/ssd1/divake/learnable_scoring_fn', batch_size=
     )
     
     return train_loader, cal_loader, test_loader, train_dataset, cal_dataset, test_dataset
-
 if __name__ == "__main__":
     # Set up datasets
-    train_loader, cal_loader, test_loader, train_dataset, cal_dataset, test_dataset = setup_cifar10()
+    train_loader, cal_loader, test_loader, train_dataset, cal_dataset, test_dataset = setup_cifar100()
     
     # Print dataset sizes
     print("\nDataset sizes:")
