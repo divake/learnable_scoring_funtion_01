@@ -31,17 +31,17 @@ class ScoringFunctionTrainer:
         
         # Modified hyperparameters
         self.target_coverage = 0.9
-        self.target_size = 1.2
-        self.margin = 0.1
+        self.target_size = 5
+        self.margin = 0.2
         
         # Loss weights
-        self.coverage_weight = 1.0
-        self.margin_weight = 0.1
-        self.size_weight = 1.0
+        self.coverage_weight = 2.0
+        self.margin_weight = 0.5
+        self.size_weight = 0.5
         
         # Bounds
         self.tau_min = 0.1
-        self.tau_max = 0.9
+        self.tau_max = 2.0
         self.num_classes = 100
 
     def compute_batch_scores(self, probs):
@@ -65,7 +65,7 @@ class ScoringFunctionTrainer:
         coverage_meter = AverageMeter()
         size_meter = AverageMeter()
         
-        # Convert tau to tensor and clamp
+        # Convert tau to tensor and clamp with higher max for CIFAR-100
         tau = torch.tensor(tau, device=self.device)
         tau = torch.clamp(tau, self.tau_min, self.tau_max)
         
@@ -83,30 +83,32 @@ class ScoringFunctionTrainer:
             # Compute scores
             scores = self.compute_batch_scores(probs)
             
+            # Score normalization for better stability
+            scores = (scores - scores.mean()) / (scores.std() + 1e-6)
+            
             # Get true class and false class scores
             target_scores = scores[torch.arange(batch_size), targets]
             mask = torch.ones_like(scores, dtype=bool)
             mask[torch.arange(batch_size), targets] = False
             false_scores = scores[mask].view(batch_size, -1)
             
-            # Stable margin loss using softplus
+            # Enhanced margin loss with adaptive margin
             min_false_scores = false_scores.min(dim=1)[0]
-            margin_loss = F.softplus(target_scores - min_false_scores + self.margin).mean()
+            margin_loss = F.softplus(target_scores - min_false_scores + self.margin, beta=10).mean()
             
-            # Smooth coverage loss
-            target_covered = (target_scores <= tau).float()
+            # Improved coverage loss with smooth transition
+            target_covered = torch.sigmoid(-(target_scores - tau) * 10)  # Smoother transition
             coverage = target_covered.mean()
             coverage_error = coverage - self.target_coverage
             coverage_loss = coverage_error.pow(2)
             
-            # Set size computation with minimum size enforcement
-            pred_sets = (scores <= tau).float()
+            # Set size computation with adaptive thresholding
+            pred_sets = torch.sigmoid(-(scores - tau) * 10)  # Soft thresholding
             set_sizes = pred_sets.sum(dim=1)
             
-            # Enforce minimum prediction set size
+            # Enhanced minimum size enforcement
             empty_preds = set_sizes < 1.0
             if empty_preds.any():
-                # For samples with no predictions, include the class with minimum score
                 empty_indices = torch.where(empty_preds)[0]
                 min_score_classes = scores[empty_indices].min(dim=1)[1]
                 pred_sets[empty_indices, min_score_classes] = 1.0
@@ -114,31 +116,32 @@ class ScoringFunctionTrainer:
             
             avg_size = set_sizes.mean()
             
-            # Strong minimum size penalty
-            min_size_violation = F.relu(1.0 - set_sizes).mean()
-            
-            # Size deviation penalty using Huber loss plus minimum size constraint
-            size_loss = (
-                F.huber_loss(
-                    avg_size, 
-                    torch.tensor(self.target_size, device=self.device),
-                    delta=0.1
-                ) + 
-                10.0 * min_size_violation  # Strong penalty for violating minimum size
+            # Improved size loss with adaptive target
+            target_size = max(5.0, self.target_size)  # Minimum target size for CIFAR-100
+            size_deviation = torch.abs(avg_size - target_size)
+            size_loss = F.huber_loss(
+                avg_size,
+                torch.tensor(target_size, device=self.device),
+                delta=0.5  # Increased delta for smoother gradients
             )
             
-            # Combined loss with proper scaling
+            # Add score spread regularization
+            score_spread = scores.std(dim=1).mean()
+            spread_loss = F.relu(1.0 - score_spread)
+            
+            # Combined loss with balanced weights
             loss = (
-                self.coverage_weight * coverage_loss +
-                self.margin_weight * margin_loss + 
-                self.size_weight * size_loss +
-                0.001 * self.scoring_fn.l2_reg  # Reduced L2 weight
+                2.0 * coverage_loss +  # Increased weight for coverage
+                0.5 * margin_loss + 
+                0.5 * size_loss +
+                0.1 * spread_loss +  # New term for score spread
+                0.0005 * self.scoring_fn.l2_reg  # Further reduced L2 weight
             )
             
-            # Optimization
+            # Optimization with gradient clipping
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.scoring_fn.parameters(), max_norm=0.5)
+            torch.nn.utils.clip_grad_norm_(self.scoring_fn.parameters(), max_norm=1.0)
             optimizer.step()
             
             # Update metrics

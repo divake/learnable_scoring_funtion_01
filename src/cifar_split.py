@@ -78,7 +78,7 @@ def verify_class_distribution(dataset, name="Dataset"):
     for i in range(100):  # Updated to 100 classes
         if class_counts[i] > 0:  # Only print classes that have samples
             print(f"{fine_labels[i]}: {class_counts[i]} images")
-def setup_cifar100(base_path='/mnt/ssd1/divake/learnable_scoring_fn', batch_size=128, save_splits=True):
+def setup_cifar100(base_path='/ssd_4TB/divake/learnable_scoring_fn', batch_size=128, save_splits=True):
     """
     Set up CIFAR-100 dataset with balanced splits and save them.
     """

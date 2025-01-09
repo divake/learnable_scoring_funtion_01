@@ -13,7 +13,7 @@ from PIL import Image
 from src.cifar_split import setup_cifar100
 import os
 
-MODEL_SAVE_DIR = '/mnt/ssd1/divake/learnable_scoring_fn/models'
+MODEL_SAVE_DIR = '/ssd_4TB/divake/learnable_scoring_fn/models'
 
 def mixup_data(x, y, device='cuda', alpha=0.8):
     """Performs mixup on the input data and label vectors."""

@@ -9,8 +9,8 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9)
     """
     # Constants for tau bounds
     tau_min = 0.1
-    tau_max = 0.9
-    window_size = 5  # For smoothing
+    tau_max = 2.0
+    window_size = 10  # For smoothing
     
     scoring_fn.eval()
     base_model.eval()
@@ -45,12 +45,8 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9)
     # Apply smoothing around the quantile
     start_idx = max(0, idx - window_size)
     end_idx = min(len(sorted_scores), idx + window_size)
-    tau = sorted_scores[start_idx:end_idx].mean().item()
-    
-    # Clamp tau to reasonable range
-    tau = max(tau_min, min(tau_max, tau))
-    
-    return tau
+    tau = sorted_scores[start_idx:end_idx].median().item()  # Use median instead of mean
+    return max(tau_min, min(tau_max, tau))
 
 def compute_coverage_and_size(prediction_sets, targets):
     """

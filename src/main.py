@@ -180,7 +180,7 @@ def main():
         anneal_strategy='cos'
     )
     
-    early_stopping = EarlyStopping()
+    # early_stopping = EarlyStopping()
 
     # Training history
     history = {
@@ -258,10 +258,10 @@ def main():
         )
         
         # Early stopping check
-        early_stopping(train_loss, val_coverage, val_size)
-        if early_stopping.early_stop:
-            logging.info("Early stopping triggered!")
-            break
+        # early_stopping(train_loss, val_coverage, val_size)
+        # if early_stopping.early_stop:
+        #     logging.info("Early stopping triggered!")
+        #     break
     
     # In main.py, after training completes and before final logging
 
