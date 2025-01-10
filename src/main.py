@@ -192,7 +192,7 @@ def main():
         'val_sizes': [],
         'tau_values': []
     }
-    
+
     # Training loop
     best_loss = float('inf')
     for epoch in range(config.num_epochs):
@@ -206,13 +206,14 @@ def main():
             scoring_fn=scoring_fn,
             base_model=base_model,
             device=config.device,
-            coverage_target=config.target_coverage
+            coverage_target=config.target_coverage,
+            epoch=epoch
         )
         
         # Train epoch
         train_loss, train_coverage, train_size = trainer.train_epoch(
             optimizer=optimizer,
-            tau=tau
+            tau=tau, epoch=epoch
         )
         
         # Evaluate
@@ -284,9 +285,17 @@ def main():
             # Get probabilities
             logits = base_model(inputs)
             probs = torch.softmax(logits, dim=1)
+            batch_size = probs.size(0)
             
-            # Get scores for all classes at once
-            scores = scoring_fn(probs)  # [batch_size, num_classes]
+            # Process probabilities in chunks like during training
+            scores = torch.zeros(batch_size, config.num_classes, device=config.device)
+            chunk_size = 1000
+            flat_probs = probs.reshape(-1, 1)  # Reshape to [N, 1]
+            
+            for i in range(0, flat_probs.size(0), chunk_size):
+                end_idx = min(i + chunk_size, flat_probs.size(0))
+                chunk_scores = scoring_fn(flat_probs[i:end_idx])
+                scores.view(-1)[i:end_idx] = chunk_scores.squeeze()
             
             # Collect true class scores
             true_class_scores = scores[torch.arange(len(targets)), targets].cpu().numpy()

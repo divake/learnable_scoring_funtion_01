@@ -10,58 +10,40 @@ class ScoringFunction(nn.Module):
         layers = []
         prev_dim = input_dim
         
-        # Use BatchNorm1d for better stability with probabilities
+        # Better normalization strategy
         self.input_norm = nn.BatchNorm1d(input_dim)
         
-        # Wider and deeper architecture for CIFAR-100
+        # Initialize target score parameters
+        self.register_buffer('target_mean', torch.tensor(0.5))
+        self.register_buffer('target_std', torch.tensor(0.1))
+        
         for dim in hidden_dims:
             layers.extend([
                 nn.Linear(prev_dim, dim),
                 nn.BatchNorm1d(dim),
                 nn.ReLU(),
-                nn.Dropout(0.2)  # Increased dropout for better generalization
+                nn.Dropout(0.2)
             ])
             prev_dim = dim
         
         # Final layer with careful initialization
-        final_layer = nn.Linear(hidden_dims[-1], output_dim)
-        # Smaller initialization for better initial scores
-        nn.init.xavier_uniform_(final_layer.weight, gain=0.01)
-        nn.init.zeros_(final_layer.bias)
-        layers.append(final_layer)
-        
-        # Modified softplus for better score range
-        layers.append(nn.Softplus(beta=10))  # Increased beta for sharper transitions
+        self.final_layer = nn.Linear(hidden_dims[-1], output_dim)
+        nn.init.xavier_uniform_(self.final_layer.weight, gain=0.01)
+        nn.init.zeros_(self.final_layer.bias)
         
         self.network = nn.Sequential(*layers)
-        self.l2_lambda = 0.0005  # Further reduced L2 regularization
-        
-        # Initialize running statistics for score normalization
-        self.register_buffer('running_mean', torch.zeros(1))
-        self.register_buffer('running_std', torch.ones(1))
-        self.momentum = 0.1
+        self.l2_lambda = 0.0001
     
     def forward(self, x):
-        # Input normalization
         x = self.input_norm(x)
+        features = self.network(x)
+        scores = self.final_layer(features)
         
-        # Forward pass through network
-        scores = self.network(x)
+        # Normalize scores to target range
+        scores = torch.sigmoid(scores)  # Bound between 0 and 1
+        scores = self.target_mean + (scores - 0.5) * self.target_std
         
-        if self.training:
-            # Update running statistics during training
-            with torch.no_grad():
-                batch_mean = scores.mean()
-                batch_std = scores.std()
-                self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * batch_mean
-                self.running_std = (1 - self.momentum) * self.running_std + self.momentum * batch_std
-        
-        # Normalize scores
-        scores = (scores - self.running_mean) / (self.running_std + 1e-6)
-        
-        # L2 regularization
         self.l2_reg = self.l2_lambda * sum(p.pow(2).sum() for p in self.parameters())
-        
         return scores
 
 class ConformalPredictor:
