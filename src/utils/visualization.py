@@ -5,67 +5,87 @@ import seaborn as sns
 import numpy as np
 import os
 import torch
+from typing import List
 
-def plot_training_curves(epochs, train_losses, train_coverages, train_sizes,
-                        val_coverages, val_sizes, tau_values, save_dir):
-    """Plot training metrics including tau values."""
-    plt.figure(figsize=(20, 5))
+def plot_training_curves(
+    epochs: List[int],
+    train_losses: List[float],
+    train_coverages: List[float],
+    train_sizes: List[float],
+    val_coverages: List[float],
+    val_sizes: List[float],
+    tau_values: List[float],
+    save_dir: str
+) -> None:
+    """Plot training curves.
     
-    # Plot loss with better scaling
-    plt.subplot(1, 4, 1)
-    log_losses = np.array([np.log10(loss) if loss > 0 else 0 for loss in train_losses])
-    plt.plot(epochs, log_losses, label='Training Loss (log10)')
-    plt.xlabel('Epoch')
-    plt.ylabel('Log Loss')
-    plt.title('Training Loss')
-    plt.legend()
-    plt.grid(True)
+    Args:
+        epochs: List of epoch numbers
+        train_losses: List of training losses
+        train_coverages: List of training coverage values
+        train_sizes: List of training set sizes
+        val_coverages: List of validation coverage values
+        val_sizes: List of validation set sizes
+        tau_values: List of tau values
+        save_dir: Directory to save plots
+    """
+    if not epochs or len(epochs) < 2:
+        return  # Need at least 2 points to plot
+        
+    plt.style.use('seaborn')
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
     
-    # Plot coverage with target band
-    plt.subplot(1, 4, 2)
-    plt.plot(epochs, train_coverages, label='Train Coverage', linewidth=2)
-    plt.plot(epochs, val_coverages, label='Val Coverage', linewidth=2)
-    plt.axhline(y=0.9, color='r', linestyle='--', label='Target')
-    plt.fill_between(epochs, [0.89] * len(epochs), [0.91] * len(epochs), 
-                    color='r', alpha=0.1, label='Target Range')
-    plt.xlabel('Epoch')
-    plt.ylabel('Coverage')
-    plt.title('Coverage vs Epoch')
-    plt.legend()
-    plt.grid(True)
-    plt.ylim(0.85, 1.0)
+    # Convert lists to numpy arrays for safety
+    epochs = np.array(epochs)
+    train_losses = np.array(train_losses)
+    train_coverages = np.array(train_coverages)
+    train_sizes = np.array(train_sizes)
+    val_coverages = np.array(val_coverages)
+    val_sizes = np.array(val_sizes)
+    tau_values = np.array(tau_values)
     
-    # Plot set size with constraints
-    plt.subplot(1, 4, 3)
-    plt.plot(epochs, train_sizes, label='Train Set Size', linewidth=2)
-    plt.plot(epochs, val_sizes, label='Val Set Size', linewidth=2)
-    plt.axhline(y=1.0, color='r', linestyle='--', label='Minimum Size')
-    plt.axhline(y=2.0, color='orange', linestyle='--', label='Maximum Size')
-    plt.fill_between(epochs, [1.0] * len(epochs), [2.0] * len(epochs),
-                    color='g', alpha=0.1, label='Target Range')
-    plt.xlabel('Epoch')
-    plt.ylabel('Average Set Size')
-    plt.title('Set Size vs Epoch')
-    plt.legend()
-    plt.grid(True)
-    plt.ylim(0, max(max(train_sizes), max(val_sizes)) + 1)
+    # Plot 1: Training Loss
+    if len(train_losses) > 0:
+        log_losses = np.log10(train_losses)
+        axes[0].plot(epochs, log_losses, label='Training Loss (log10)')
+        axes[0].set_xlabel('Epoch')
+        axes[0].set_ylabel('Log Loss')
+        axes[0].set_title('Training Loss')
+        axes[0].legend()
+        axes[0].grid(True)
     
-    # Plot tau values with bounds
-    plt.subplot(1, 4, 4)
-    plt.plot(epochs, tau_values, label='Tau', linewidth=2)
-    plt.axhline(y=0.3, color='r', linestyle='--', label='Min Tau')
-    plt.axhline(y=0.9, color='orange', linestyle='--', label='Max Tau')
-    plt.fill_between(epochs, [0.3] * len(epochs), [0.9] * len(epochs),
-                    color='b', alpha=0.1, label='Valid Range')
-    plt.xlabel('Epoch')
-    plt.ylabel('Tau Value')
-    plt.title('Tau vs Epoch')
-    plt.legend()
-    plt.grid(True)
-    plt.ylim(0, 1)
+    # Plot 2: Coverage
+    if len(train_coverages) > 0 and len(val_coverages) > 0:
+        axes[1].plot(epochs, train_coverages, label='Train Coverage')
+        axes[1].plot(epochs, val_coverages, label='Val Coverage')
+        axes[1].axhline(y=0.9, color='r', linestyle='--', label='Target')
+        axes[1].set_xlabel('Epoch')
+        axes[1].set_ylabel('Coverage')
+        axes[1].set_title('Coverage vs Epoch')
+        axes[1].legend()
+        axes[1].grid(True)
+    
+    # Plot 3: Set Size
+    if len(train_sizes) > 0 and len(val_sizes) > 0:
+        axes[2].plot(epochs, train_sizes, label='Train Size')
+        axes[2].plot(epochs, val_sizes, label='Val Size')
+        axes[2].set_xlabel('Epoch')
+        axes[2].set_ylabel('Average Set Size')
+        axes[2].set_title('Set Size vs Epoch')
+        axes[2].legend()
+        axes[2].grid(True)
+    
+    # Plot 4: Tau Values
+    if len(tau_values) > 0:
+        axes[3].plot(epochs, tau_values, label='Tau')
+        axes[3].set_xlabel('Epoch')
+        axes[3].set_ylabel('Tau')
+        axes[3].set_title('Tau vs Epoch')
+        axes[3].legend()
+        axes[3].grid(True)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'training_curves.png'), dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(save_dir, 'training_curves.png'))
     plt.close()
 
 def plot_scoring_function_behavior(scoring_fn, device, save_dir):
@@ -73,7 +93,6 @@ def plot_scoring_function_behavior(scoring_fn, device, save_dir):
     plt.figure(figsize=(15, 5))
     
     # Plot 1: Basic scoring function behavior
-    plt.subplot(1, 3, 1)
     softmax_scores = torch.linspace(0, 1, 1000, device=device).reshape(-1, 1)
     
     with torch.no_grad():

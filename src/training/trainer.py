@@ -94,9 +94,9 @@ class ScoringFunctionTrainer:
             score_mean = scores.mean()
             score_std = scores.std()
             consistency_loss = F.mse_loss(score_mean, 
-                                        torch.tensor(self.scoring_fn.target_mean, device=self.device)) + \
+                                        self.scoring_fn.target_mean.clone().detach().to(self.device)) + \
                             F.mse_loss(score_std, 
-                                        torch.tensor(self.scoring_fn.target_std, device=self.device))
+                                        self.scoring_fn.target_std.clone().detach().to(self.device))
             
             # Original losses
             target_scores = scores[torch.arange(batch_size), targets]
@@ -121,7 +121,7 @@ class ScoringFunctionTrainer:
 
             size_loss = F.huber_loss(
                 avg_size,
-                torch.tensor(self.target_size, device=self.device),
+                torch.tensor(self.target_size, device=self.device, dtype=torch.float),
                 delta=0.5
             )
             
