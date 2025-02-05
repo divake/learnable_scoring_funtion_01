@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 from .logger import Logger
 from .exceptions import ConfigurationError
+import numpy as np
 
 class Experiment:
     """Experiment tracking and management."""
@@ -61,15 +62,32 @@ class Experiment:
         for key, value in config.items():
             if isinstance(value, dict):
                 serialized[key] = self._serialize_config(value)
+            elif isinstance(value, (list, tuple)):
+                serialized[key] = [self._serialize_value(item) for item in value]
             else:
-                # Handle special cases
-                if str(type(value).__name__) == 'device':
-                    serialized[key] = str(value)
-                elif hasattr(value, '__dict__'):
-                    serialized[key] = str(value)
-                else:
-                    serialized[key] = value
+                serialized[key] = self._serialize_value(value)
         return serialized
+    
+    def _serialize_value(self, value: Any) -> Any:
+        """Helper method to serialize individual values.
+        
+        Args:
+            value: Value to serialize
+            
+        Returns:
+            Serialized value
+        """
+        if isinstance(value, (np.int32, np.int64)):
+            return int(value)
+        elif isinstance(value, (np.float32, np.float64)):
+            return float(value)
+        elif isinstance(value, np.ndarray):
+            return value.tolist()
+        elif str(type(value).__name__) == 'device':
+            return str(value)
+        elif hasattr(value, '__dict__'):
+            return str(value)
+        return value
     
     def save_config(self) -> None:
         """Save experiment configuration to JSON file."""

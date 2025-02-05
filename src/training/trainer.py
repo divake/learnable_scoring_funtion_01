@@ -60,11 +60,15 @@ class ScoringFunctionTrainer:
         return scores
 
 
-    def train_epoch(self, optimizer, tau, epoch):
+    def train_epoch(self, optimizer, tau, epoch, return_scores=False):
         self.scoring_fn.train()
         loss_meter = AverageMeter()
         coverage_meter = AverageMeter()
         size_meter = AverageMeter()
+        
+        # Lists to store scores
+        all_true_scores = []
+        all_false_scores = []
         
         def compute_prediction_sets(scores, tau):
             pred_sets = scores <= tau
@@ -103,6 +107,11 @@ class ScoringFunctionTrainer:
             mask = torch.ones_like(scores, dtype=bool)
             mask[torch.arange(batch_size), targets] = False
             false_scores = scores[mask].view(batch_size, -1)
+            
+            # Store scores if requested
+            if return_scores:
+                all_true_scores.append(target_scores.detach())
+                all_false_scores.append(false_scores.min(dim=1)[0].detach())
             
             margin_loss = F.softplus(target_scores - false_scores.min(dim=1)[0] + self.margin).mean()
             
@@ -152,6 +161,9 @@ class ScoringFunctionTrainer:
                 'Size': f'{size_meter.avg:.3f}'
             })
         
+        if return_scores:
+            return (loss_meter.avg, coverage_meter.avg, size_meter.avg,
+                    torch.cat(all_true_scores), torch.cat(all_false_scores))
         return loss_meter.avg, coverage_meter.avg, size_meter.avg
 
     def evaluate(self, loader, tau):

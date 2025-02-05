@@ -12,7 +12,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from utils.config import Config
 from utils.metrics import compute_coverage_and_size, compute_tau
 from utils.visualization import (plot_training_curves, plot_score_distributions,
-                               plot_set_size_distribution, plot_scoring_function_behavior)
+                               plot_set_size_distribution, plot_scoring_function_behavior,
+                               plot_nonconformity_scores)
 from utils.logger import Logger
 from utils.experiment import Experiment
 from utils.callbacks import ModelCheckpoint
@@ -303,10 +304,11 @@ def train(
             )
             
             # Train epoch
-            train_loss, train_coverage, train_size = trainer.train_epoch(
+            train_loss, train_coverage, train_size, true_scores, false_scores = trainer.train_epoch(
                 optimizer=optimizer,
                 tau=tau,
-                epoch=epoch
+                epoch=epoch,
+                return_scores=True  # New parameter to return scores
             )
             
             # Evaluate
@@ -334,14 +336,19 @@ def train(
             
             # Update history
             history['epochs'].append(epoch)
-            for key, value in metrics.items():
-                if key in history:
-                    history[key].append(value)
+            history['train_losses'].append(float(train_loss))
+            history['train_coverages'].append(float(train_coverage))
+            history['train_sizes'].append(float(train_size))
+            history['val_coverages'].append(float(val_coverage))
+            history['val_sizes'].append(float(val_size))
+            history['tau_values'].append(float(tau))
+            history['true_scores'].extend(true_scores.cpu().numpy().tolist())
+            history['false_scores'].extend(false_scores.cpu().numpy().tolist())
             
             # Save history
             experiment.save_metrics(history, 'history.json')
             
-            # Plot training curves only if we have enough data points
+            # Plot training curves and distributions
             if len(history['epochs']) > 1:
                 try:
                     plot_training_curves(
@@ -354,8 +361,24 @@ def train(
                         tau_values=history['tau_values'],
                         save_dir=experiment.plot_dir
                     )
+                    
+                    # Generate scoring function plot periodically
+                    if epoch % 5 == 0:  # Every 5 epochs
+                        plot_scoring_function_behavior(
+                            scoring_fn,
+                            config.device,
+                            experiment.plot_dir
+                        )
+                        
+                        # Plot nonconformity score distributions
+                        plot_nonconformity_scores(
+                            true_scores=np.array(true_scores.cpu()),
+                            false_scores=np.array(false_scores.cpu()),
+                            tau=tau,
+                            save_dir=experiment.plot_dir
+                        )
                 except Exception as plot_error:
-                    logger.warning(f"Failed to plot training curves: {str(plot_error)}")
+                    logger.warning(f"Failed to plot: {str(plot_error)}")
             
         logger.info("Training completed")
         return history
@@ -405,24 +428,36 @@ def main():
         scoring_fn.load_state_dict(torch.load(experiment.get_checkpoint_path('best_model'), weights_only=True))
         
         if history:  # Only generate visualizations if we have history
-            # Generate visualizations
-            plot_score_distributions(
-                true_scores=np.array(history['true_scores']),
-                false_scores=np.array(history['false_scores']),
-                tau=history['tau_values'][-1],
-                save_dir=experiment.plot_dir
-            )
-            
-            plot_set_size_distribution(
-                set_sizes=np.array(history['set_sizes']),
-                save_dir=experiment.plot_dir
-            )
-            
-            plot_scoring_function_behavior(
-                scoring_fn,
-                config.device,
-                experiment.plot_dir
-            )
+            try:
+                # Get the last tau value safely
+                last_tau = history.get('tau_values', [])[-1] if history.get('tau_values', []) else history.get('tau', 0.5)
+                
+                # Generate visualizations if we have the required data
+                if history.get('true_scores') and history.get('false_scores'):
+                    plot_score_distributions(
+                        true_scores=np.array(history['true_scores']),
+                        false_scores=np.array(history['false_scores']),
+                        tau=last_tau,
+                        save_dir=experiment.plot_dir
+                    )
+                else:
+                    logger.warning("Missing score data for score distribution plot")
+
+                if history.get('set_sizes'):
+                    plot_set_size_distribution(
+                        set_sizes=np.array(history['set_sizes']),
+                        save_dir=experiment.plot_dir
+                    )
+                else:
+                    logger.warning("Missing set size data for distribution plot")
+
+                plot_scoring_function_behavior(
+                    scoring_fn,
+                    config.device,
+                    experiment.plot_dir
+                )
+            except Exception as viz_error:
+                logger.error(f"Failed to generate some visualizations: {str(viz_error)}")
         
         logger.info("Experiment completed successfully")
         

@@ -93,6 +93,7 @@ def plot_scoring_function_behavior(scoring_fn, device, save_dir):
     plt.figure(figsize=(15, 5))
     
     # Plot 1: Basic scoring function behavior
+    plt.subplot(1, 3, 1)
     softmax_scores = torch.linspace(0, 1, 1000, device=device).reshape(-1, 1)
     
     with torch.no_grad():
@@ -221,4 +222,34 @@ def plot_set_size_distribution(set_sizes, save_dir):
     
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, 'set_size_distribution.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_nonconformity_scores(true_scores, false_scores, tau, save_dir):
+    """Plot distribution of nonconformity scores for true and false classes.
+    
+    Args:
+        true_scores: Nonconformity scores for true class predictions
+        false_scores: Nonconformity scores for false class predictions
+        tau: Current threshold value
+        save_dir: Directory to save the plot
+    """
+    plt.figure(figsize=(10, 6))
+    
+    # Plot distributions
+    sns.kdeplot(true_scores, label='True Class', linewidth=2)
+    sns.kdeplot(false_scores, label='False Class', linewidth=2)
+    
+    # Add tau threshold line
+    plt.axvline(x=tau, color='r', linestyle='--', label='Tau')
+    
+    # Customize plot
+    plt.xlabel('Conformity Score')
+    plt.ylabel('Density')
+    plt.title('Score Distributions')
+    plt.legend()
+    plt.grid(True)
+    
+    # Save plot
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'nonconformity_scores.png'), dpi=300, bbox_inches='tight')
     plt.close()
