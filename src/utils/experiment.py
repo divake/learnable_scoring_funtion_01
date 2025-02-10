@@ -1,11 +1,7 @@
 import os
-import json
-import shutil
-from datetime import datetime
 from typing import Dict, Any, Optional
 from .logger import Logger
 from .exceptions import ConfigurationError
-import numpy as np
 
 class Experiment:
     """Experiment tracking and management."""
@@ -29,79 +25,21 @@ class Experiment:
         self.base_dir = base_dir
         self.config = config
         self.logger = logger
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Use fixed directories instead of creating new ones for each run
         self.model_dir = os.path.join(base_dir, 'models')
         self.plot_dir = os.path.join(base_dir, 'plots')
-        self.log_dir = os.path.join(base_dir, 'logs')
+        self.log_dir = os.path.join(base_dir, 'logs')  # Keep reference but don't create
         
-        # Create directories if they don't exist
-        for directory in [self.model_dir, self.plot_dir, self.log_dir]:
+        # Create only model and plot directories
+        for directory in [self.model_dir, self.plot_dir]:
             os.makedirs(directory, exist_ok=True)
-        
-        # Save configuration
-        self.save_config()
         
         if self.logger:
             self.logger.info(f"Using fixed directories for experiment")
             self.logger.info(f"Model directory: {self.model_dir}")
             self.logger.info(f"Plot directory: {self.plot_dir}")
             self.logger.info(f"Log directory: {self.log_dir}")
-    
-    def _serialize_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Serialize configuration, handling non-serializable objects.
-        
-        Args:
-            config: Configuration dictionary
-            
-        Returns:
-            dict: Serializable configuration dictionary
-        """
-        serialized = {}
-        for key, value in config.items():
-            if isinstance(value, dict):
-                serialized[key] = self._serialize_config(value)
-            elif isinstance(value, (list, tuple)):
-                serialized[key] = [self._serialize_value(item) for item in value]
-            else:
-                serialized[key] = self._serialize_value(value)
-        return serialized
-    
-    def _serialize_value(self, value: Any) -> Any:
-        """Helper method to serialize individual values.
-        
-        Args:
-            value: Value to serialize
-            
-        Returns:
-            Serialized value
-        """
-        if isinstance(value, (np.int32, np.int64)):
-            return int(value)
-        elif isinstance(value, (np.float32, np.float64)):
-            return float(value)
-        elif isinstance(value, np.ndarray):
-            return value.tolist()
-        elif str(type(value).__name__) == 'device':
-            return str(value)
-        elif hasattr(value, '__dict__'):
-            return str(value)
-        return value
-    
-    def save_config(self) -> None:
-        """Save experiment configuration to JSON file."""
-        config_path = os.path.join(self.log_dir, 'config.json')
-        try:
-            serialized_config = self._serialize_config(self.config)
-            with open(config_path, 'w') as f:
-                json.dump(serialized_config, f, indent=4)
-            if self.logger:
-                self.logger.info(f"Saved configuration to {config_path}")
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Failed to save configuration: {str(e)}")
-            raise ConfigurationError(f"Failed to save configuration: {str(e)}")
     
     def get_checkpoint_path(self, name: str) -> str:
         """Get path for model checkpoint.
@@ -124,44 +62,6 @@ class Experiment:
             str: Full path to plot file
         """
         return os.path.join(self.plot_dir, f"{name}.png")
-    
-    def save_metrics(self, metrics: Dict[str, Any], filename: str = 'metrics.json') -> None:
-        """Save metrics to JSON file.
-        
-        Args:
-            metrics: Dictionary of metrics
-            filename: Name of metrics file
-        """
-        metrics_path = os.path.join(self.log_dir, filename)
-        try:
-            serialized_metrics = self._serialize_config(metrics)
-            with open(metrics_path, 'w') as f:
-                json.dump(serialized_metrics, f, indent=4)
-            if self.logger:
-                self.logger.info(f"Saved metrics to {metrics_path}")
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Failed to save metrics: {str(e)}")
-            raise ConfigurationError(f"Failed to save metrics: {str(e)}")
-    
-    def load_metrics(self, filename: str = 'metrics.json') -> Dict[str, Any]:
-        """Load metrics from JSON file.
-        
-        Args:
-            filename: Name of metrics file
-            
-        Returns:
-            dict: Dictionary of metrics
-        """
-        metrics_path = os.path.join(self.log_dir, filename)
-        try:
-            with open(metrics_path, 'r') as f:
-                metrics = json.load(f)
-            return metrics
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Failed to load metrics: {str(e)}")
-            raise ConfigurationError(f"Failed to load metrics: {str(e)}")
     
     def __str__(self) -> str:
         """String representation of experiment."""

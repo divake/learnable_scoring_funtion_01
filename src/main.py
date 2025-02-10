@@ -8,6 +8,7 @@ import os
 import timm
 import torchvision.transforms as transforms
 from typing import Dict, Any, List, Optional, Tuple
+import time
 
 from utils.config import Config
 from utils.metrics import compute_coverage_and_size, compute_tau
@@ -19,7 +20,7 @@ from utils.experiment import Experiment
 from utils.callbacks import ModelCheckpoint
 from utils.exceptions import (ConfigurationError, ModelError, DataError,
                             TrainingError, ValidationError)
-from models.scoring_function import ScoringFunction, ConformalPredictor
+from models.scoring_function import ScoringFunction
 from training.trainer import ScoringFunctionTrainer
 from cifar_split import setup_cifar100
 from utils.seed import set_seed
@@ -305,9 +306,6 @@ def train(
             history['true_scores'].extend(true_scores.cpu().numpy().tolist())
             history['false_scores'].extend(false_scores.cpu().numpy().tolist())
             
-            # Save metrics
-            experiment.save_metrics(history, 'history.json')
-            
             # Save best model
             if val_coverage > best_val_coverage:
                 best_val_coverage = val_coverage
@@ -339,12 +337,14 @@ def train(
                         config.plot_dir
                     )
                     
-                    # Plot nonconformity score distributions
+                    # Plot nonconformity score distributions for current epoch
                     plot_nonconformity_scores(
                         true_scores=np.array(true_scores.cpu()),
                         false_scores=np.array(false_scores.cpu()),
                         tau=tau,
-                        save_dir=config.plot_dir
+                        save_dir=config.plot_dir,
+                        epoch=epoch+1,
+                        num_epochs=config.num_epochs
                     )
                 except Exception as plot_error:
                     logger.warning(f"Failed to plot: {str(plot_error)}")
@@ -370,6 +370,8 @@ def train(
 def main():
     logger = None  # Initialize logger as None at the start
     history = None  # Initialize history as None
+    start_time = time.time()  # Start timing
+    
     try:
         # Load configuration
         config = Config()
@@ -440,7 +442,14 @@ def main():
             except Exception as viz_error:
                 logger.error(f"Failed to generate some visualizations: {str(viz_error)}")
         
+        # Calculate total time
+        total_time = time.time() - start_time
+        hours = int(total_time // 3600)
+        minutes = int((total_time % 3600) // 60)
+        seconds = int(total_time % 60)
+        
         logger.info("Experiment completed successfully")
+        logger.info(f"Total execution time: {hours:02d}:{minutes:02d}:{seconds:02d}")
         
     except Exception as e:
         if logger:
@@ -448,4 +457,5 @@ def main():
         raise
 
 if __name__ == "__main__":
+    import time  # Add time import at the top
     main()

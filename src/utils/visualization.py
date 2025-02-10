@@ -6,6 +6,8 @@ import numpy as np
 import os
 import torch
 from typing import List
+import pandas as pd
+from scipy.stats import gaussian_kde
 
 def plot_training_curves(
     epochs: List[int],
@@ -46,10 +48,9 @@ def plot_training_curves(
     
     # Plot 1: Training Loss
     if len(train_losses) > 0:
-        log_losses = np.log10(train_losses)
-        axes[0].plot(epochs, log_losses, label='Training Loss (log10)')
+        axes[0].plot(epochs, train_losses, label='Training Loss')
         axes[0].set_xlabel('Epoch')
-        axes[0].set_ylabel('Log Loss')
+        axes[0].set_ylabel('Loss')
         axes[0].set_title('Training Loss')
         axes[0].legend()
         axes[0].grid(True)
@@ -224,30 +225,69 @@ def plot_set_size_distribution(set_sizes, save_dir):
     plt.savefig(os.path.join(save_dir, 'set_size_distribution.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
-def plot_nonconformity_scores(true_scores, false_scores, tau, save_dir):
-    """Plot distribution of nonconformity scores for true and false classes.
+def plot_nonconformity_scores(true_scores, false_scores, tau, save_dir, epoch=None, num_epochs=None):
+    """Plot distribution of nonconformity scores for true and false classes."""
+    plt.figure(figsize=(12, 8))
     
-    Args:
-        true_scores: Nonconformity scores for true class predictions
-        false_scores: Nonconformity scores for false class predictions
-        tau: Current threshold value
-        save_dir: Directory to save the plot
-    """
-    plt.figure(figsize=(10, 6))
+    # Define colors
+    true_color = '#2ecc71'    # Emerald green
+    false_color = '#e74c3c'   # Pomegranate red
+    tau_color = '#3498db'     # Peter river blue
     
-    # Plot distributions
-    sns.kdeplot(true_scores, label='True Class', linewidth=2)
-    sns.kdeplot(false_scores, label='False Class', linewidth=2)
+    # Calculate KDE for both distributions
+    true_kde = gaussian_kde(true_scores.ravel())
+    false_kde = gaussian_kde(false_scores.ravel())
     
-    # Add tau threshold line
-    plt.axvline(x=tau, color='r', linestyle='--', label='Tau')
+    # Create evaluation points for the KDE
+    x_grid = np.linspace(
+        min(true_scores.min(), false_scores.min()),
+        max(true_scores.max(), false_scores.max()),
+        200
+    )
     
-    # Customize plot
+    # Evaluate KDEs
+    true_density = true_kde(x_grid)
+    false_density = false_kde(x_grid)
+    
+    # Plot true class distribution
+    plt.fill_between(x_grid, true_density, alpha=0.3, color=true_color)
+    plt.plot(x_grid, true_density, color=true_color, linewidth=2, label='True Class')
+    
+    # Plot false class distribution
+    plt.fill_between(x_grid, false_density, alpha=0.3, color=false_color)
+    plt.plot(x_grid, false_density, color=false_color, linewidth=2, label='False Class')
+    
+    # Plot tau line
+    plt.axvline(x=tau, color=tau_color, linestyle='--', linewidth=2, label='Tau')
+    plt.text(tau + 0.00001, plt.gca().get_ylim()[1], f'τ = {tau:.6f}', 
+             rotation=90, va='top', color=tau_color)
+    
+    # Calculate statistics
+    true_mean = float(np.mean(true_scores))
+    false_mean = float(np.mean(false_scores))
+    separation = abs(false_mean - true_mean)
+    
+    # Add statistics box
+    stats_text = (f'Distribution Stats:\n'
+                 f'True Mean: {true_mean:.6f}\n'
+                 f'False Mean: {false_mean:.6f}\n'
+                 f'Separation: {separation:.6f}')
+    
+    plt.text(0.02, 0.98, stats_text,
+             transform=plt.gca().transAxes,
+             verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # Set title based on epoch information
+    if epoch is not None and num_epochs is not None:
+        plt.title(f'Score Distributions (Epoch {epoch}/{num_epochs})')
+    else:
+        plt.title('Score Distributions')
+    
     plt.xlabel('Conformity Score')
     plt.ylabel('Density')
-    plt.title('Score Distributions')
     plt.legend()
-    plt.grid(True)
+    plt.grid(True, alpha=0.3)
     
     # Save plot
     plt.tight_layout()

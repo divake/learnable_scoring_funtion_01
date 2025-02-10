@@ -61,28 +61,3 @@ class ScoringFunction(nn.Module):
             self.l2_reg = self.l2_lambda * sum(p.pow(2).sum() for p in self.parameters())
         
         return scores
-
-class ConformalPredictor:
-    def __init__(self, base_model, scoring_fn):
-        self.base_model = base_model
-        self.scoring_fn = scoring_fn
-        
-    def get_prediction_sets(self, inputs, tau):
-        with torch.no_grad():
-            # Get softmax probabilities from base model
-            logits = self.base_model(inputs)
-            probs = torch.softmax(logits, dim=1)
-            batch_size = probs.size(0)
-            
-            # Reshape and compute scores efficiently
-            flat_probs = probs.reshape(-1, 1)
-            flat_scores = self.scoring_fn(flat_probs)
-            scores = flat_scores.reshape(batch_size, -1)
-            
-            # Generate prediction sets
-            prediction_sets = []
-            for i in range(batch_size):
-                pred_set = torch.where(scores[i] <= tau)[0]
-                prediction_sets.append(pred_set)
-                
-        return prediction_sets, probs
