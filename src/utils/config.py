@@ -22,10 +22,10 @@ class Config:
         self.data_dir = os.path.join(self.base_dir, config['base']['data_dir'])
         self.model_dir = os.path.join(self.base_dir, config['base']['model_dir'])
         self.plot_dir = os.path.join(self.base_dir, config['base']['plot_dir'])
-        self.experiment_dir = os.path.join(self.base_dir, config['base']['experiment_dir'])
+        self.log_dir = os.path.join(self.base_dir, config['base']['log_dir'])
         
         # Create directories
-        for directory in [self.data_dir, self.model_dir, self.plot_dir, self.experiment_dir]:
+        for directory in [self.data_dir, self.model_dir, self.plot_dir, self.log_dir]:
             os.makedirs(directory, exist_ok=True)
         
         # Model configuration
@@ -74,7 +74,7 @@ class Config:
                 'data_dir': os.path.relpath(self.data_dir, self.base_dir),
                 'model_dir': os.path.relpath(self.model_dir, self.base_dir),
                 'plot_dir': os.path.relpath(self.plot_dir, self.base_dir),
-                'experiment_dir': os.path.relpath(self.experiment_dir, self.base_dir),
+                'log_dir': os.path.relpath(self.log_dir, self.base_dir),
                 'device': 'cuda' if self.device.type == 'cuda' else 'cpu'
             },
             'model': {

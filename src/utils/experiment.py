@@ -30,24 +30,24 @@ class Experiment:
         self.config = config
         self.logger = logger
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.experiment_id = f"{name}_{self.timestamp}"
         
-        # Setup experiment directory
-        self.experiment_dir = os.path.join(base_dir, 'experiments', self.experiment_id)
-        self.checkpoint_dir = os.path.join(self.experiment_dir, 'checkpoints')
-        self.log_dir = os.path.join(self.experiment_dir, 'logs')
-        self.plot_dir = os.path.join(self.experiment_dir, 'plots')
+        # Use fixed directories instead of creating new ones for each run
+        self.model_dir = os.path.join(base_dir, 'models')
+        self.plot_dir = os.path.join(base_dir, 'plots')
+        self.log_dir = os.path.join(base_dir, 'logs')
         
-        # Create directories
-        for directory in [self.experiment_dir, self.checkpoint_dir, self.log_dir, self.plot_dir]:
+        # Create directories if they don't exist
+        for directory in [self.model_dir, self.plot_dir, self.log_dir]:
             os.makedirs(directory, exist_ok=True)
         
         # Save configuration
         self.save_config()
         
         if self.logger:
-            self.logger.info(f"Created experiment: {self.experiment_id}")
-            self.logger.info(f"Experiment directory: {self.experiment_dir}")
+            self.logger.info(f"Using fixed directories for experiment")
+            self.logger.info(f"Model directory: {self.model_dir}")
+            self.logger.info(f"Plot directory: {self.plot_dir}")
+            self.logger.info(f"Log directory: {self.log_dir}")
     
     def _serialize_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Serialize configuration, handling non-serializable objects.
@@ -91,7 +91,7 @@ class Experiment:
     
     def save_config(self) -> None:
         """Save experiment configuration to JSON file."""
-        config_path = os.path.join(self.experiment_dir, 'config.json')
+        config_path = os.path.join(self.log_dir, 'config.json')
         try:
             serialized_config = self._serialize_config(self.config)
             with open(config_path, 'w') as f:
@@ -112,7 +112,7 @@ class Experiment:
         Returns:
             str: Full path to checkpoint file
         """
-        return os.path.join(self.checkpoint_dir, f"{name}.pth")
+        return os.path.join(self.model_dir, f"{name}.pth")
     
     def get_plot_path(self, name: str) -> str:
         """Get path for plot file.
@@ -132,7 +132,7 @@ class Experiment:
             metrics: Dictionary of metrics
             filename: Name of metrics file
         """
-        metrics_path = os.path.join(self.experiment_dir, filename)
+        metrics_path = os.path.join(self.log_dir, filename)
         try:
             serialized_metrics = self._serialize_config(metrics)
             with open(metrics_path, 'w') as f:
@@ -153,7 +153,7 @@ class Experiment:
         Returns:
             dict: Dictionary of metrics
         """
-        metrics_path = os.path.join(self.experiment_dir, filename)
+        metrics_path = os.path.join(self.log_dir, filename)
         try:
             with open(metrics_path, 'r') as f:
                 metrics = json.load(f)
@@ -163,35 +163,6 @@ class Experiment:
                 self.logger.error(f"Failed to load metrics: {str(e)}")
             raise ConfigurationError(f"Failed to load metrics: {str(e)}")
     
-    def archive(self) -> None:
-        """Archive experiment directory."""
-        archive_dir = os.path.join(self.base_dir, 'archived_experiments')
-        os.makedirs(archive_dir, exist_ok=True)
-        
-        try:
-            shutil.make_archive(
-                os.path.join(archive_dir, self.experiment_id),
-                'zip',
-                self.experiment_dir
-            )
-            if self.logger:
-                self.logger.info(f"Archived experiment to {archive_dir}")
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Failed to archive experiment: {str(e)}")
-            raise ConfigurationError(f"Failed to archive experiment: {str(e)}")
-    
-    def clean(self) -> None:
-        """Clean up experiment directory."""
-        try:
-            shutil.rmtree(self.experiment_dir)
-            if self.logger:
-                self.logger.info(f"Cleaned up experiment directory: {self.experiment_dir}")
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Failed to clean experiment directory: {str(e)}")
-            raise ConfigurationError(f"Failed to clean experiment directory: {str(e)}")
-    
     def __str__(self) -> str:
         """String representation of experiment."""
-        return f"Experiment(id={self.experiment_id}, dir={self.experiment_dir})" 
+        return f"Experiment(name={self.name}, base_dir={self.base_dir})" 

@@ -119,15 +119,7 @@ def setup_experiment(config: Config) -> Tuple[Experiment, Logger]:
     return experiment, logger
 
 def setup_model(config: Config, logger: Logger) -> Tuple[nn.Module, nn.Module]:
-    """Setup base model and scoring function.
-    
-    Args:
-        config: Configuration object
-        logger: Logger instance
-        
-    Returns:
-        tuple: Base model and scoring function
-    """
+    """Setup base model and scoring function."""
     try:
         # Load pretrained ViT model
         base_model = timm.create_model(
@@ -139,20 +131,28 @@ def setup_model(config: Config, logger: Logger) -> Tuple[nn.Module, nn.Module]:
             drop_rate=0.1
         )
         
-        # Enable gradient checkpointing
+        # Enable gradient checkpointing without use_reentrant parameter
         base_model.set_grad_checkpointing(enable=True)
         
-        # Load trained weights with weights_only=True
+        # Load trained weights
         base_model.load_state_dict(torch.load(config.vit_model_path, weights_only=True))
         base_model = base_model.to(config.device)
-        base_model.eval()
+        base_model.eval()  # Set to eval mode since we don't train it
         
-        # Initialize scoring function
+        # Freeze base model parameters
+        for param in base_model.parameters():
+            param.requires_grad = False
+        
+        # Initialize scoring function with requires_grad=True
         scoring_fn = ScoringFunction(
             input_dim=1,
             hidden_dims=config.hidden_dims,
             output_dim=1
         ).to(config.device)
+        
+        # Ensure scoring function parameters require gradients
+        for param in scoring_fn.parameters():
+            param.requires_grad = True
         
         logger.info("Models initialized successfully")
         logger.log_model_summary(scoring_fn)
@@ -213,21 +213,7 @@ def train(
     cal_loader: Any,
     test_loader: Any
 ) -> Dict[str, Any]:
-    """Main training loop.
-    
-    Args:
-        config: Configuration object
-        experiment: Experiment instance
-        logger: Logger instance
-        base_model: Base model
-        scoring_fn: Scoring function
-        train_loader: Training data loader
-        cal_loader: Calibration data loader
-        test_loader: Test data loader
-        
-    Returns:
-        dict: Training history containing metrics and values
-    """
+    """Main training loop."""
     try:
         # Initialize trainer
         trainer = ScoringFunctionTrainer(
@@ -259,16 +245,6 @@ def train(
             anneal_strategy=config.optimizer_config['scheduler']['anneal_strategy']
         )
         
-        # Setup callbacks
-        callbacks = [
-            ModelCheckpoint(
-                filepath=experiment.get_checkpoint_path('best_model'),
-                monitor='val_coverage',
-                mode='max',
-                logger=logger
-            )
-        ]
-        
         # Training history
         history = {
             'epochs': [],
@@ -284,6 +260,7 @@ def train(
         }
         
         logger.info("Starting training")
+        best_val_coverage = 0.0
         
         # Training loop
         for epoch in range(config.num_epochs):
@@ -308,7 +285,7 @@ def train(
                 optimizer=optimizer,
                 tau=tau,
                 epoch=epoch,
-                return_scores=True  # New parameter to return scores
+                return_scores=True
             )
             
             # Evaluate
@@ -316,23 +293,6 @@ def train(
             
             # Update scheduler
             scheduler.step()
-            
-            # Update history
-            metrics = {
-                'train_loss': train_loss,
-                'train_coverage': train_coverage,
-                'train_size': train_size,
-                'val_coverage': val_coverage,
-                'val_size': val_size,
-                'tau': tau
-            }
-            
-            # Update callbacks
-            for callback in callbacks:
-                callback.on_epoch_end(epoch, {'model': scoring_fn, **metrics})
-            
-            # Log metrics
-            logger.log_metrics(epoch, metrics)
             
             # Update history
             history['epochs'].append(epoch)
@@ -345,12 +305,22 @@ def train(
             history['true_scores'].extend(true_scores.cpu().numpy().tolist())
             history['false_scores'].extend(false_scores.cpu().numpy().tolist())
             
-            # Save history
+            # Save metrics
             experiment.save_metrics(history, 'history.json')
             
-            # Plot training curves and distributions
+            # Save best model
+            if val_coverage > best_val_coverage:
+                best_val_coverage = val_coverage
+                torch.save(
+                    scoring_fn.state_dict(),
+                    os.path.join(config.model_dir, 'scoring_function_best.pth')
+                )
+                logger.info(f"Saved best model with coverage: {best_val_coverage:.4f}")
+            
+            # Plot all visualizations at each epoch for live monitoring
             if len(history['epochs']) > 1:
                 try:
+                    # Plot training curves
                     plot_training_curves(
                         epochs=history['epochs'],
                         train_losses=history['train_losses'],
@@ -359,27 +329,37 @@ def train(
                         val_coverages=history['val_coverages'],
                         val_sizes=history['val_sizes'],
                         tau_values=history['tau_values'],
-                        save_dir=experiment.plot_dir
+                        save_dir=config.plot_dir
                     )
                     
-                    # Generate scoring function plot periodically
-                    if epoch % 5 == 0:  # Every 5 epochs
-                        plot_scoring_function_behavior(
-                            scoring_fn,
-                            config.device,
-                            experiment.plot_dir
-                        )
-                        
-                        # Plot nonconformity score distributions
-                        plot_nonconformity_scores(
-                            true_scores=np.array(true_scores.cpu()),
-                            false_scores=np.array(false_scores.cpu()),
-                            tau=tau,
-                            save_dir=experiment.plot_dir
-                        )
+                    # Plot scoring function behavior
+                    plot_scoring_function_behavior(
+                        scoring_fn,
+                        config.device,
+                        config.plot_dir
+                    )
+                    
+                    # Plot nonconformity score distributions
+                    plot_nonconformity_scores(
+                        true_scores=np.array(true_scores.cpu()),
+                        false_scores=np.array(false_scores.cpu()),
+                        tau=tau,
+                        save_dir=config.plot_dir
+                    )
                 except Exception as plot_error:
                     logger.warning(f"Failed to plot: {str(plot_error)}")
             
+            # Log epoch results
+            logger.info(
+                f"Epoch {epoch+1}/{config.num_epochs} - "
+                f"Loss: {train_loss:.4f}, "
+                f"Train Coverage: {train_coverage:.4f}, "
+                f"Train Size: {train_size:.2f}, "
+                f"Val Coverage: {val_coverage:.4f}, "
+                f"Val Size: {val_size:.2f}, "
+                f"Tau: {tau:.4f}"
+            )
+        
         logger.info("Training completed")
         return history
         
@@ -425,7 +405,8 @@ def main():
         logger.info("Generating final visualizations")
         
         # Load best model
-        scoring_fn.load_state_dict(torch.load(experiment.get_checkpoint_path('best_model'), weights_only=True))
+        best_model_path = os.path.join(config.model_dir, 'scoring_function_best.pth')
+        scoring_fn.load_state_dict(torch.load(best_model_path, weights_only=True))
         
         if history:  # Only generate visualizations if we have history
             try:
@@ -438,7 +419,7 @@ def main():
                         true_scores=np.array(history['true_scores']),
                         false_scores=np.array(history['false_scores']),
                         tau=last_tau,
-                        save_dir=experiment.plot_dir
+                        save_dir=config.plot_dir
                     )
                 else:
                     logger.warning("Missing score data for score distribution plot")
@@ -446,7 +427,7 @@ def main():
                 if history.get('set_sizes'):
                     plot_set_size_distribution(
                         set_sizes=np.array(history['set_sizes']),
-                        save_dir=experiment.plot_dir
+                        save_dir=config.plot_dir
                     )
                 else:
                     logger.warning("Missing set size data for distribution plot")
@@ -454,15 +435,12 @@ def main():
                 plot_scoring_function_behavior(
                     scoring_fn,
                     config.device,
-                    experiment.plot_dir
+                    config.plot_dir
                 )
             except Exception as viz_error:
                 logger.error(f"Failed to generate some visualizations: {str(viz_error)}")
         
         logger.info("Experiment completed successfully")
-        
-        # Archive experiment
-        experiment.archive()
         
     except Exception as e:
         if logger:
