@@ -234,28 +234,39 @@ def plot_nonconformity_scores(true_scores, false_scores, tau, save_dir, epoch=No
     false_color = '#e74c3c'   # Pomegranate red
     tau_color = '#3498db'     # Peter river blue
     
+    # Ensure arrays are 1D numpy arrays
+    true_scores = np.asarray(true_scores).flatten()
+    false_scores = np.asarray(false_scores).flatten()
+    
     # Calculate KDE for both distributions
-    true_kde = gaussian_kde(true_scores.ravel())
-    false_kde = gaussian_kde(false_scores.ravel())
-    
-    # Create evaluation points for the KDE
-    x_grid = np.linspace(
-        min(true_scores.min(), false_scores.min()),
-        max(true_scores.max(), false_scores.max()),
-        200
-    )
-    
-    # Evaluate KDEs
-    true_density = true_kde(x_grid)
-    false_density = false_kde(x_grid)
-    
-    # Plot true class distribution
-    plt.fill_between(x_grid, true_density, alpha=0.3, color=true_color)
-    plt.plot(x_grid, true_density, color=true_color, linewidth=2, label='True Class')
-    
-    # Plot false class distribution
-    plt.fill_between(x_grid, false_density, alpha=0.3, color=false_color)
-    plt.plot(x_grid, false_density, color=false_color, linewidth=2, label='False Class')
+    try:
+        true_kde = gaussian_kde(true_scores)
+        false_kde = gaussian_kde(false_scores)
+        
+        # Create evaluation points for the KDE
+        x_grid = np.linspace(
+            min(true_scores.min(), false_scores.min()),
+            max(true_scores.max(), false_scores.max()),
+            200
+        )
+        
+        # Evaluate KDEs
+        true_density = true_kde(x_grid)
+        false_density = false_kde(x_grid)
+        
+        # Plot true class distribution
+        plt.fill_between(x_grid, true_density, alpha=0.3, color=true_color)
+        plt.plot(x_grid, true_density, color=true_color, linewidth=2, label='True Class')
+        
+        # Plot false class distribution
+        plt.fill_between(x_grid, false_density, alpha=0.3, color=false_color)
+        plt.plot(x_grid, false_density, color=false_color, linewidth=2, label='False Class')
+        
+    except Exception as e:
+        print(f"Error in KDE calculation: {str(e)}")
+        # Fallback to histogram if KDE fails
+        plt.hist(true_scores, bins=50, alpha=0.5, color=true_color, density=True, label='True Class')
+        plt.hist(false_scores, bins=50, alpha=0.5, color=false_color, density=True, label='False Class')
     
     # Plot tau line
     plt.axvline(x=tau, color=tau_color, linestyle='--', linewidth=2, label='Tau')

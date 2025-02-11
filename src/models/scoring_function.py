@@ -11,21 +11,24 @@ class ScoringFunction(nn.Module):
         self.register_buffer('target_mean', torch.tensor(0.5))
         self.register_buffer('target_std', torch.tensor(0.1))
         
-        # Temperature scaling parameter
-        self.temperature = nn.Parameter(torch.ones(1) * 10.0)
+        # Temperature scaling parameter for final output
+        self.temperature = nn.Parameter(torch.ones(1) * 5.0)
         
-        # Build network more efficiently with ModuleList
-        self.layers = nn.ModuleList()
+        # Build efficient network with fused operations
+        layers = []
         prev_dim = input_dim
         
         for dim in hidden_dims:
-            self.layers.append(nn.Sequential(
-                nn.Linear(prev_dim, dim),
+            layers.extend([
+                nn.Linear(prev_dim, dim, bias=False),  # Remove bias as it's handled by LayerNorm
                 nn.LayerNorm(dim),
                 nn.GELU(),
-                nn.Dropout(0.2)
-            ))
+                nn.Dropout(0.1)
+            ])
             prev_dim = dim
+        
+        # Use ModuleList for better performance
+        self.layers = nn.ModuleList(layers)
         
         # Final layer with careful initialization
         self.final_layer = nn.Linear(hidden_dims[-1], output_dim)
@@ -33,30 +36,47 @@ class ScoringFunction(nn.Module):
         nn.init.zeros_(self.final_layer.bias)
         
         self.l2_lambda = 0.0001
+        
+        # Enable torch.compile for faster execution
+        if hasattr(torch, 'compile'):
+            self.forward = torch.compile(self.forward)
     
-    def forward(self, x):
-        # Handle input dimensions efficiently
+    def _process_batch(self, x):
+        """Process a batch of inputs efficiently."""
+        # Handle input dimensions
         if x.dim() == 1:
             x = x.unsqueeze(1)
         x = x.view(-1, 1) if x.dim() != 2 else x
         
-        # Forward pass with skip connections - more efficient implementation
+        # Ensure input requires grad
+        if not x.requires_grad and self.training:
+            x = x.detach().requires_grad_(True)
+        
+        return x
+    
+    def forward(self, x):
+        x = self._process_batch(x)
+        
+        # Forward pass with residual connections
         residual = x
-        for layer in self.layers:
-            out = layer(x)
-            if out.shape == residual.shape:
-                x = out + residual
-            else:
-                x = out
+        for i in range(0, len(self.layers), 4):
+            # Process layer group (Linear + LayerNorm + GELU + Dropout)
+            layer_group = self.layers[i:i+4]
+            
+            # Compute layer output
+            for layer in layer_group:
+                x = layer(x)
+            
+            # Add residual if dimensions match
+            if x.size(-1) == residual.size(-1):
+                x = x + residual
             residual = x
         
-        # Final layer and normalization
+        # Final layer with temperature scaling
         scores = self.final_layer(x)
+        scores = 1.0 - torch.sigmoid(scores / self.temperature)
         
-        # Temperature scaling and normalization - done in one go
-        scores = self.target_mean + (torch.sigmoid(scores / self.temperature) - 0.5) * self.target_std
-        
-        # L2 regularization - compute only during training
+        # L2 regularization during training
         if self.training:
             self.l2_reg = self.l2_lambda * sum(p.pow(2).sum() for p in self.parameters())
         
