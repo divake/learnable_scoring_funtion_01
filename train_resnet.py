@@ -59,7 +59,7 @@ def train_resnet():
     device = torch.device("cuda")
     
     # Create model directory
-    model_dir = '/ssd1/divake/learnable_scoring_fn/models'
+    model_dir = '/ssd_4TB/divake/vision_cp/learnable_scoring_funtion_01/models'
     os.makedirs(model_dir, exist_ok=True)
     
     # Load datasets
@@ -67,7 +67,9 @@ def train_resnet():
     
     # Create model
     model = models.resnet18(weights=None)
-    model.fc = nn.Linear(model.fc.in_features, 10)
+    model.fc = nn.Sequential(
+        nn.Linear(model.fc.in_features, 10)
+    )
     model.apply(init_weights)
     model = model.to(device)
     

@@ -100,7 +100,7 @@ class TraditionalConformalPredictor:
 def main():
     # Setup
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    base_path = '/ssd1/divake/learnable_scoring_fn'
+    base_path = '/ssd_4TB/divake/vision_cp/learnable_scoring_funtion_01'
     plot_dir = os.path.join(base_path, 'plots_traditional')
     os.makedirs(plot_dir, exist_ok=True)
     

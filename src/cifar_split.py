@@ -83,7 +83,7 @@ def verify_class_distribution(dataset, name="Dataset"):
     for i in range(10):
         print(f"{classes[i]}: {class_counts[i]} images")
 
-def setup_cifar10(base_path='/ssd1/divake/learnable_scoring_fn', batch_size=128, save_splits=True):
+def setup_cifar10(base_path='/ssd_4TB/divake/vision_cp/learnable_scoring_funtion_01', batch_size=128, save_splits=True):
     """
     Set up CIFAR-10 dataset with balanced splits and save them.
     """

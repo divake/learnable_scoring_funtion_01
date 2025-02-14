@@ -34,6 +34,13 @@ def setup_logging(config):
         ]
     )
 
+# def inspect_saved_model(model_path):
+#     """Inspect the architecture of a saved model."""
+#     state_dict = torch.load(model_path)
+#     print("\nSaved model state_dict keys:")
+#     for key in state_dict.keys():
+#         print(f"  {key}")
+
 def main():
     # Set seed
     set_seed(42)
@@ -43,14 +50,23 @@ def main():
     setup_logging(config)
     logging.info("Starting training process")
     
+    # Inspect saved model first
+    model_path = os.path.join(config.model_dir, 'resnet18_cifar10_best.pth')
+    # logging.info("Inspecting saved model architecture...")
+    # inspect_saved_model(model_path)
+    
     # Load data
     train_loader, cal_loader, test_loader, _, _, _ = setup_cifar10(batch_size=config.batch_size)
     logging.info("Data loaded successfully")
     
     # Load pretrained ResNet model
     base_model = models.resnet18(weights=None)
-    base_model.fc = nn.Linear(base_model.fc.in_features, 10)
-    base_model.load_state_dict(torch.load(os.path.join(config.model_dir, 'resnet18_cifar10_best.pth')))
+    # Modify fc layer to match the saved architecture
+    base_model.fc = nn.Sequential(
+        nn.Identity(),  # This will be fc.0
+        nn.Linear(base_model.fc.in_features, 10)  # This will be fc.1
+    )
+    base_model.load_state_dict(torch.load(model_path))
     base_model = base_model.to(config.device)
     base_model.eval()
     logging.info("Base model loaded successfully")
@@ -146,14 +162,43 @@ def main():
         logging.info(f"Val Set Size: {val_size:.4f}")
         logging.info(f"Tau: {tau:.4f}")
         
-        # Save best model
-        if train_loss < best_loss and train_size < 2.0:
-            best_loss = train_loss
-            torch.save(scoring_fn.state_dict(),
-                      os.path.join(config.model_dir, 'scoring_function_best.pth'))
-            logging.info("Saved new best model")
-        
-        # Plot training curves
+        # Collect data for distributions
+        true_scores = []
+        false_scores = []
+        set_sizes = []
+
+        scoring_fn.eval()
+        with torch.no_grad():
+            for inputs, targets in test_loader:
+                inputs = inputs.to(config.device)
+                targets = targets.to(config.device)
+                
+                # Get probabilities
+                logits = base_model(inputs)
+                probs = torch.softmax(logits, dim=1)
+                
+                # Get scores for all classes
+                scores = torch.zeros_like(probs, device=config.device)
+                for i in range(probs.size(1)):
+                    class_probs = probs[:, i:i+1]
+                    scores[:, i:i+1] = scoring_fn(class_probs)
+                
+                # Collect true class scores
+                true_class_scores = scores[torch.arange(len(targets)), targets].cpu().numpy()
+                true_scores.extend(true_class_scores)
+                
+                # Collect false class scores (all other classes)
+                mask = torch.ones_like(scores, dtype=bool)
+                mask[torch.arange(len(targets)), targets] = False
+                false_class_scores = scores[mask].cpu().numpy()
+                false_scores.extend(false_class_scores)
+                
+                # Compute set sizes using the final tau
+                pred_sets = (scores <= tau).sum(dim=1)
+                set_sizes.extend(pred_sets.cpu().numpy())
+
+        # Update plots every epoch
+        logging.info("Updating plots...")
         plot_training_curves(
             epochs=history['epochs'],
             train_losses=history['train_losses'],
@@ -165,13 +210,32 @@ def main():
             save_dir=config.plot_dir
         )
         
+        plot_score_distributions(
+            true_scores=np.array(true_scores),
+            false_scores=np.array(false_scores),
+            tau=tau,
+            save_dir=config.plot_dir
+        )
+
+        plot_set_size_distribution(
+            set_sizes=np.array(set_sizes),
+            save_dir=config.plot_dir
+        )
+
+        plot_scoring_function_behavior(scoring_fn, config.device, config.plot_dir)
+        
+        # Save best model
+        if train_loss < best_loss and train_size < 2.0:
+            best_loss = train_loss
+            torch.save(scoring_fn.state_dict(),
+                      os.path.join(config.model_dir, 'scoring_function_best.pth'))
+            logging.info("Saved new best model")
+        
         # Early stopping check
         early_stopping(train_loss, val_coverage, val_size)
         if early_stopping.early_stop:
             logging.info("Early stopping triggered!")
             break
-    
-    # In main.py, after training completes and before final logging
 
     logging.info("Training completed!")
 
