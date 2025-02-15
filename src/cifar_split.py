@@ -83,7 +83,7 @@ def verify_class_distribution(dataset, name="Dataset"):
     for i in range(10):
         print(f"{classes[i]}: {class_counts[i]} images")
 
-def setup_cifar10(base_path='/ssd_4TB/divake/vision_cp/learnable_scoring_funtion_01', batch_size=128, save_splits=True):
+def setup_cifar10(base_path='/ssd_4TB/divake/learnable_scoring_funtion_01', batch_size=128, save_splits=True):
     """
     Set up CIFAR-10 dataset with balanced splits and save them.
     """
@@ -106,20 +106,25 @@ def setup_cifar10(base_path='/ssd_4TB/divake/vision_cp/learnable_scoring_funtion
         transform=transform
     )
     
-    # Create or load splits
-    train_indices, cal_indices = load_split_indices(base_path)
-    
-    if train_indices is None or cal_indices is None:
-        print("Creating new splits...")
-        train_indices, cal_indices = create_balanced_split(full_train_dataset)
-        if save_splits:
-            save_split_indices(train_indices, cal_indices, base_path)
-    else:
-        print("Loading existing splits...")
+    # Force recreate splits
+    print("Creating new splits...")
+    train_indices, cal_indices = create_balanced_split(full_train_dataset)
+    if save_splits:
+        # Remove old split file if it exists
+        split_path = os.path.join(base_path, 'data', 'splits', 'cifar10_splits.pkl')
+        if os.path.exists(split_path):
+            print("Removed old split file")
+            os.remove(split_path)
+        save_split_indices(train_indices, cal_indices, base_path)
     
     # Create datasets using indices
     train_dataset = Subset(full_train_dataset, train_indices)
     cal_dataset = Subset(full_train_dataset, cal_indices)
+    
+    # Verify splits are balanced
+    print("\nVerifying splits are balanced:")
+    verify_class_distribution(train_dataset, "Training set")
+    verify_class_distribution(cal_dataset, "Calibration set")
     
     # Load test dataset
     test_dataset = torchvision.datasets.CIFAR10(

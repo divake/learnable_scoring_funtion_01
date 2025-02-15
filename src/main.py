@@ -34,13 +34,6 @@ def setup_logging(config):
         ]
     )
 
-# def inspect_saved_model(model_path):
-#     """Inspect the architecture of a saved model."""
-#     state_dict = torch.load(model_path)
-#     print("\nSaved model state_dict keys:")
-#     for key in state_dict.keys():
-#         print(f"  {key}")
-
 def main():
     # Set seed
     set_seed(42)
