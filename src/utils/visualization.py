@@ -83,7 +83,7 @@ def plot_score_distributions(true_scores, false_scores, tau, save_dir):
     sns.kdeplot(false_scores, label='False Class Scores')
     plt.axvline(x=tau, color='r', linestyle='--', label='Tau Threshold')
     
-    plt.xlabel('Conformity Score')
+    plt.xlabel('Non-Conformity Score')
     plt.ylabel('Density')
     plt.title('Distribution of Conformity Scores')
     plt.legend()
