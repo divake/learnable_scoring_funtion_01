@@ -65,24 +65,6 @@ def load_split_indices(base_path):
         return split_info['test_indices'], split_info['cal_indices']
     return None, None
 
-def verify_class_distribution(dataset, name="Dataset"):
-    """
-    Print class distribution in a dataset.
-    """
-    if isinstance(dataset, Subset):
-        targets = [dataset.dataset.targets[i] for i in dataset.indices]
-    else:
-        targets = dataset.targets
-        
-    class_counts = Counter(targets)
-    
-    classes = ('plane', 'car', 'bird', 'cat', 'deer',
-              'dog', 'frog', 'horse', 'ship', 'truck')
-    
-    print(f"\nClass distribution in {name}:")
-    for i in range(10):
-        print(f"{classes[i]}: {class_counts[i]} images")
-
 def setup_cifar10(base_path='/ssd_4TB/divake/learnable_scoring_funtion_01', batch_size=128, save_splits=True,
               train_transform=None, test_transform=None):
     """
@@ -150,10 +132,7 @@ def setup_cifar10(base_path='/ssd_4TB/divake/learnable_scoring_funtion_01', batc
     print(f"Training set size: {len(train_dataset)}")
     print(f"Calibration set size: {len(cal_dataset)}")
     print(f"Test set size: {len(test_dataset)}")
-    
-    verify_class_distribution(train_dataset, "Training set")
-    verify_class_distribution(cal_dataset, "Calibration set")
-    verify_class_distribution(test_dataset, "Test set")
+
     
     # Create dataloaders
     train_loader = DataLoader(

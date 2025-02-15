@@ -34,6 +34,25 @@ def setup_logging(config):
         ]
     )
 
+def setup_base_model():
+    """Set up the base ResNet18 model with the correct architecture to match saved weights."""
+    model = models.resnet18(weights=None)
+    
+    # Wrap each layer in an additional Sequential to match the saved architecture
+    for layer_name in ['layer1', 'layer2', 'layer3', 'layer4']:
+        layer = getattr(model, layer_name)
+        # Create new Sequential that wraps the existing layer
+        new_layer = nn.Sequential(layer)
+        setattr(model, layer_name, new_layer)
+    
+    # Modify fc layer to match the saved architecture
+    model.fc = nn.Sequential(
+        nn.Identity(),  # This will be fc.0
+        nn.Linear(model.fc.in_features, 10)  # This will be fc.1
+    )
+    
+    return model
+
 def main():
     # Set seed
     set_seed(42)
@@ -43,23 +62,14 @@ def main():
     setup_logging(config)
     logging.info("Starting training process")
     
-    # Inspect saved model first
-    model_path = os.path.join(config.model_dir, 'resnet18_cifar10_best.pth')
-    # logging.info("Inspecting saved model architecture...")
-    # inspect_saved_model(model_path)
-    
     # Load data
     train_loader, cal_loader, test_loader, _, _, _ = setup_cifar10(batch_size=config.batch_size)
     logging.info("Data loaded successfully")
     
-    # Load pretrained ResNet model
-    base_model = models.resnet18(weights=None)
-    # Modify fc layer to match the saved architecture
-    base_model.fc = nn.Sequential(
-        nn.Identity(),  # This will be fc.0
-        nn.Linear(base_model.fc.in_features, 10)  # This will be fc.1
-    )
-    base_model.load_state_dict(torch.load(model_path))
+    # Load pretrained ResNet model with correct architecture
+    model_path = os.path.join(config.model_dir, 'resnet18_cifar10_best.pth')
+    base_model = setup_base_model()
+    base_model.load_state_dict(torch.load(model_path, weights_only=True))
     base_model = base_model.to(config.device)
     base_model.eval()
     logging.info("Base model loaded successfully")
