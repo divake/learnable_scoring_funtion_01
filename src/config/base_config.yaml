@@ -4,5 +4,3 @@
 base_dir: /ssd_4TB/divake/learnable_scoring_funtion_01
 data_dir: data
 model_dir: models
-plot_dir: plots
-log_dir: logs

@@ -1,27 +1,27 @@
-# CIFAR-10 specific configuration
+# CIFAR-100 specific configuration
 inherit: base_config.yaml
 
 dataset:
-  name: cifar10
-  num_classes: 10
+  name: cifar100
+  num_classes: 100
   input_size: [32, 32]
-  mean: [0.4914, 0.4822, 0.4465]
-  std: [0.2023, 0.1994, 0.2010]
+  mean: [0.5071, 0.4867, 0.4408]
+  std: [0.2675, 0.2565, 0.2761]
 
 model:
-  architecture: resnet18
-  pretrained_path: models/resnet18_cifar10_best.pth 
+  architecture: vit_base_patch16_224_in21k
+  pretrained_path: models/vit_cifar100.pth
+  img_size: 96
+  drop_path_rate: 0.1
+  drop_rate: 0.1
 
 # Paths
-plot_dir: plots/cifar10
-log_dir: logs/cifar10
+plot_dir: plots/cifar100
+log_dir: logs/cifar100
 
 # Training parameters
 num_epochs: 50
 batch_size: 128
-learning_rate: 0.001
-lambda1: 1.0  # Coverage loss weight
-lambda2: 1.0  # Set size loss weight
 target_coverage: 0.9
 
 # Training configuration
@@ -72,5 +72,5 @@ tau:
 # Set size constraints
 set_size:
   target: 1.2
-  max: 3.0
+  max: 5.0
   margin: 0.5 
