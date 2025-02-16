@@ -9,9 +9,8 @@ src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.dirname(src_dir))
 
 import torch
-from src.utils.config import ConfigManager
-from src.models import ScoringFunction
-from src.training import ScoringFunctionTrainer
+from src.core import ScoringFunction, ScoringFunctionTrainer, ConfigManager
+from src.utils import set_seed
 
 def setup_logging(config):
     """Setup logging configuration"""
@@ -31,7 +30,7 @@ def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description='Train scoring function')
     parser.add_argument('--config', type=str, required=True,
-                      help='Path to config file')
+                      help='Path to config file (e.g., src/config/cifar10.yaml)')
     args = parser.parse_args()
     
     # Load and setup configuration
@@ -43,6 +42,9 @@ def main():
     setup_logging(config)
     logging.info(f"Using config: {args.config}")
     logging.info(f"Using device: {config['device']}")
+    
+    # Set random seed for reproducibility
+    set_seed(42)
     
     # Initialize dataset
     dataset_class = config.get_dataset_class()
@@ -85,5 +87,5 @@ def main():
     
     logging.info("Training completed!")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main() 

@@ -1,4 +1,4 @@
-# src/training/trainer.py
+# src/core/trainer.py
 
 import torch
 import torch.nn as nn
@@ -7,14 +7,13 @@ from tqdm import tqdm
 import logging
 import os
 
-from src.utils.metrics import AverageMeter
 from src.utils.visualization import (
     plot_training_curves, 
     plot_score_distributions,
     plot_set_size_distribution, 
     plot_scoring_function_behavior
 )
-from src.utils.metrics import compute_tau
+from .metrics import AverageMeter, compute_tau
 
 class ScoringFunctionTrainer:
     def __init__(self, base_model, scoring_fn, train_loader, cal_loader, 

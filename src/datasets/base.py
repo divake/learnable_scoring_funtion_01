@@ -10,7 +10,7 @@ class BaseDataset(ABC):
         
     @abstractmethod
     def setup(self):
-        """Setup the dataset and create train/val/test/calibration splits"""
+        """Setup the dataset and create train/test/calibration splits"""
         pass
     
     @abstractmethod
@@ -25,7 +25,6 @@ class BaseDataset(ABC):
             
         return {
             'train': self.train_loader,
-            'val': self.val_loader,
             'test': self.test_loader,
             'calibration': self.cal_loader
         }

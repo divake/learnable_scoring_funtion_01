@@ -1,25 +1,45 @@
-# src/utils/config.py
+"""
+Configuration management for the learnable scoring function project.
+Handles loading, merging, and accessing configuration files.
+"""
 
 import os
 import yaml
 import torch
-from dataclasses import dataclass
-from typing import Dict, Any
 import importlib
+from typing import Dict, Any
 
 class ConfigManager:
     def __init__(self, config_path: str):
+        """
+        Initialize configuration manager
+        
+        Args:
+            config_path: Path to the configuration file
+        """
         self.config_path = config_path
         self.config = self._load_config()
         
     def _load_config(self) -> Dict[str, Any]:
         """Load and merge configuration files"""
+        if not os.path.exists(self.config_path):
+            raise FileNotFoundError(
+                f"Config file not found: {self.config_path}\n"
+                f"Please make sure the config file exists and the path is correct.\n"
+                f"Config files should be in the src/config/ directory."
+            )
+            
         with open(self.config_path, 'r') as f:
             config = yaml.safe_load(f)
             
         # Handle inheritance
         if 'inherit' in config:
             base_path = os.path.join(os.path.dirname(self.config_path), config['inherit'])
+            if not os.path.exists(base_path):
+                raise FileNotFoundError(
+                    f"Base config file not found: {base_path}\n"
+                    f"This file is referenced as 'inherit' in {self.config_path}"
+                )
             with open(base_path, 'r') as f:
                 base_config = yaml.safe_load(f)
             # Merge configs (config overrides base_config)
@@ -72,41 +92,4 @@ class ConfigManager:
     
     def get(self, key, default=None):
         """Safe dictionary-like access with default"""
-        return self.config.get(key, default)
-
-@dataclass
-class Config:
-    # Paths
-    base_dir: str = '/ssd_4TB/divake/learnable_scoring_funtion_01'
-    data_dir: str = 'data'
-    model_dir: str = 'models'
-    plot_dir: str = 'plots'
-    
-    # Model parameters
-    num_classes: int = 10
-    hidden_dims: list = None  # Will be set to [64, 32] by default
-    
-    # Training parameters
-    num_epochs: int = 50
-    batch_size: int = 128
-    learning_rate: float = 0.001
-    lambda1: float = 1.0  # Coverage loss weight
-    lambda2: float = 1.0  # Set size loss weight
-    target_coverage: float = 0.9
-    
-    def __post_init__(self):
-        if self.hidden_dims is None:
-            self.hidden_dims = [64, 32]
-        
-        # Create full paths
-        self.data_dir = os.path.join(self.base_dir, self.data_dir)
-        self.model_dir = os.path.join(self.base_dir, self.model_dir)
-        self.plot_dir = os.path.join(self.base_dir, self.plot_dir)
-        
-        # Create directories if they don't exist
-        os.makedirs(self.data_dir, exist_ok=True)
-        os.makedirs(self.model_dir, exist_ok=True)
-        os.makedirs(self.plot_dir, exist_ok=True)
-        
-        # Set device
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        return self.config.get(key, default) 

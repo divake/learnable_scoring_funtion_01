@@ -1,9 +1,10 @@
 import torch
 import torchvision
 import torchvision.transforms as transforms
-from torch.utils.data import random_split, DataLoader
+from torch.utils.data import random_split, DataLoader, Subset
 import os
 import logging
+import numpy as np
 
 from src.datasets.base import BaseDataset
 import torchvision.models as models
@@ -30,47 +31,45 @@ class Dataset(BaseDataset):
         if not download:
             logging.info("CIFAR-10 dataset already exists, skipping download")
         
-        # Load full training set
-        full_train = torchvision.datasets.CIFAR10(
+        # Load full training set (50,000 samples)
+        train_data = torchvision.datasets.CIFAR10(
             root=self.config['data_dir'],
             train=True,
             download=download,
             transform=transform
         )
         
-        # Calculate split sizes
-        total_size = len(full_train)
-        train_size = int(total_size * self.config['splits']['train_size'])
-        val_size = int(total_size * self.config['splits']['val_size'])
-        cal_size = int(total_size * self.config['splits']['cal_size'])
-        test_size = total_size - train_size - val_size - cal_size
-        
-        # Split dataset
-        train_data, val_data, cal_data, remaining = random_split(
-            full_train, 
-            [train_size, val_size, cal_size, test_size]
-        )
-        
-        # Load test set
-        test_data = torchvision.datasets.CIFAR10(
+        # Load full test set (10,000 samples)
+        test_full = torchvision.datasets.CIFAR10(
             root=self.config['data_dir'],
             train=False,
             download=download,
             transform=transform
         )
         
+        # Create stratified split of test set
+        test_labels = np.array(test_full.targets)
+        cal_indices = []
+        test_indices = []
+        
+        # For each class, split its samples equally between calibration and test
+        for class_idx in range(self._num_classes):
+            class_indices = np.where(test_labels == class_idx)[0]
+            np.random.shuffle(class_indices)
+            split_idx = len(class_indices) // 2
+            
+            cal_indices.extend(class_indices[:split_idx])
+            test_indices.extend(class_indices[split_idx:])
+        
+        # Create calibration and test datasets
+        cal_data = Subset(test_full, cal_indices)
+        test_data = Subset(test_full, test_indices)
+        
         # Create dataloaders
         self.train_loader = DataLoader(
             train_data,
             batch_size=self.config['batch_size'],
             shuffle=True,
-            num_workers=4
-        )
-        
-        self.val_loader = DataLoader(
-            val_data,
-            batch_size=self.config['batch_size'],
-            shuffle=False,
             num_workers=4
         )
         
