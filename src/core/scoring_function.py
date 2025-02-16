@@ -66,45 +66,45 @@ class ScoringFunction(nn.Module):
         
         return scores
 
-class ConformalPredictor:
-    def __init__(self, base_model, scoring_fn, num_classes=10):
-        """
-        Wrapper for base model and scoring function for conformal prediction
+# class ConformalPredictor:
+#     def __init__(self, base_model, scoring_fn, num_classes=10):
+#         """
+#         Wrapper for base model and scoring function for conformal prediction
         
-        Args:
-            base_model: Frozen pretrained model
-            scoring_fn: Trained scoring function
-            num_classes: Number of classes
-        """
-        self.base_model = base_model
-        self.scoring_fn = scoring_fn
-        self.num_classes = num_classes
+#         Args:
+#             base_model: Frozen pretrained model
+#             scoring_fn: Trained scoring function
+#             num_classes: Number of classes
+#         """
+#         self.base_model = base_model
+#         self.scoring_fn = scoring_fn
+#         self.num_classes = num_classes
         
-    def get_prediction_sets(self, inputs, tau):
-        """
-        Generate prediction sets based on non-conformity scores
+#     def get_prediction_sets(self, inputs, tau):
+#         """
+#         Generate prediction sets based on non-conformity scores
         
-        Args:
-            inputs: Input images
-            tau: Threshold for prediction sets
-        Returns:
-            prediction_sets: List of prediction sets for each input
-            softmax_probs: Softmax probabilities
-        """
-        with torch.no_grad():
-            # Get softmax probabilities from base model
-            logits = self.base_model(inputs)
-            softmax_probs = torch.softmax(logits, dim=1)
+#         Args:
+#             inputs: Input images
+#             tau: Threshold for prediction sets
+#         Returns:
+#             prediction_sets: List of prediction sets for each input
+#             softmax_probs: Softmax probabilities
+#         """
+#         with torch.no_grad():
+#             # Get softmax probabilities from base model
+#             logits = self.base_model(inputs)
+#             softmax_probs = torch.softmax(logits, dim=1)
             
-            # Get non-conformity scores for all classes
-            scores = torch.zeros_like(softmax_probs)
-            for i in range(self.num_classes):
-                scores[:, i] = self.scoring_fn(softmax_probs[:, i:i+1]).squeeze()
+#             # Get non-conformity scores for all classes
+#             scores = torch.zeros_like(softmax_probs)
+#             for i in range(self.num_classes):
+#                 scores[:, i] = self.scoring_fn(softmax_probs[:, i:i+1]).squeeze()
             
-            # Generate prediction sets
-            prediction_sets = []
-            for i in range(len(inputs)):
-                pred_set = torch.where(scores[i] <= tau)[0]
-                prediction_sets.append(pred_set)
+#             # Generate prediction sets
+#             prediction_sets = []
+#             for i in range(len(inputs)):
+#                 pred_set = torch.where(scores[i] <= tau)[0]
+#                 prediction_sets.append(pred_set)
                 
-        return prediction_sets, softmax_probs
+#         return prediction_sets, softmax_probs
