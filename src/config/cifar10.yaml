@@ -20,6 +20,16 @@ lambda1: 1.0  # Coverage loss weight
 lambda2: 1.0  # Set size loss weight
 target_coverage: 0.9
 
+# Training configuration
+training:
+  grad_clip:
+    enabled: true
+    max_norm: 0.5
+  loss_weights:
+    coverage: 1.0  # lambda1
+    size: 1.0      # lambda2
+    margin: 0.2    # margin loss weight
+
 # Optimizer configuration
 optimizer:
   name: 'AdamW'
@@ -40,6 +50,14 @@ scoring_function:
   hidden_dims: [64, 32]
   dropout: 0.2
   l2_lambda: 0.1
+  activation:
+    name: 'LeakyReLU'
+    params:
+      negative_slope: 0.1
+  final_activation:
+    name: 'Softplus'
+    params:
+      beta: 10
 
 # Training constraints
 tau:

@@ -37,8 +37,14 @@ class ScoringFunctionTrainer:
         self.test_loader = test_loader
         self.device = device
         self.config = config  # Store entire config
-        self.lambda1 = config['lambda1']  # Coverage loss weight
-        self.lambda2 = config['lambda2']  # Set size loss weight
+        
+        # Get loss weights from config
+        self.lambda1 = config['training']['loss_weights']['coverage']
+        self.lambda2 = config['training']['loss_weights']['size']
+        self.margin_weight = config['training']['loss_weights']['margin']
+        
+        # Get gradient clipping config
+        self.grad_clip_config = config['training']['grad_clip']
         
     def _setup_optimizer(self, num_epochs):
         """Setup optimizer and scheduler based on configuration"""
@@ -109,11 +115,16 @@ class ScoringFunctionTrainer:
         """Save model if it's the best so far"""
         if train_loss < best_loss and set_size < set_size_config['max']:
             best_loss = train_loss
+            
+            # Create dataset-specific filename
+            dataset_name = self.config['dataset']['name']
+            model_filename = f'scoring_function_{dataset_name}_best.pth'
+            
             torch.save(
                 self.scoring_fn.state_dict(),
-                os.path.join(save_dir, 'scoring_function_best.pth')
+                os.path.join(save_dir, model_filename)
             )
-            logging.info("Saved new best model")
+            logging.info(f"Saved new best model for {dataset_name}")
         return best_loss
     
     def train(self, num_epochs, target_coverage, tau_config, set_size_config, save_dir, plot_dir):
@@ -232,12 +243,19 @@ class ScoringFunctionTrainer:
             loss = (
                 self.lambda1 * coverage_loss +
                 self.lambda2 * size_penalty +
-                0.2 * margin_loss
+                self.margin_weight * margin_loss
             )
             
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.scoring_fn.parameters(), max_norm=0.5)
+            
+            # Apply gradient clipping if enabled
+            if self.grad_clip_config['enabled']:
+                torch.nn.utils.clip_grad_norm_(
+                    self.scoring_fn.parameters(), 
+                    max_norm=self.grad_clip_config['max_norm']
+                )
+            
             optimizer.step()
             
             # Update meters

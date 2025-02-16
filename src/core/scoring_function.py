@@ -5,9 +5,21 @@ import torch.nn as nn
 
 
 class ScoringFunction(nn.Module):
-    def __init__(self, input_dim=1, hidden_dims=[64, 32], output_dim=1):
+    def __init__(self, input_dim=1, hidden_dims=[64, 32], output_dim=1, config=None):
+        """
+        Initialize scoring function
+        
+        Args:
+            input_dim: Input dimension (default: 1)
+            hidden_dims: List of hidden layer dimensions
+            output_dim: Output dimension (default: 1)
+            config: Configuration dictionary containing model parameters
+        """
         super().__init__()
         
+        if config is None:
+            raise ValueError("config must be provided")
+            
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 # More conservative initialization
@@ -23,17 +35,25 @@ class ScoringFunction(nn.Module):
         nn.init.constant_(first_layer.weight, -1.0)  # Initialize to approximate 1-x
         nn.init.constant_(first_layer.bias, 1.0)
         
+        # Get activation configuration
+        activation_config = config['scoring_function']['activation']
+        if activation_config['name'] == 'LeakyReLU':
+            activation = nn.LeakyReLU(**activation_config['params'])
+        else:
+            raise ValueError(f"Unsupported activation: {activation_config['name']}")
+        
         layers.append(first_layer)
         layers.append(nn.BatchNorm1d(hidden_dims[0]))
-        layers.append(nn.LeakyReLU(0.1))  # Use LeakyReLU for more stable gradients
+        layers.append(activation)
         
         # Hidden layers with dropout
+        dropout_rate = config['scoring_function']['dropout']
         for i in range(len(hidden_dims)-1):
             layers.extend([
                 nn.Linear(hidden_dims[i], hidden_dims[i+1]),
                 nn.BatchNorm1d(hidden_dims[i+1]),
-                nn.LeakyReLU(0.1),
-                nn.Dropout(0.2)  # Add dropout for regularization
+                activation,
+                nn.Dropout(dropout_rate)
             ])
         
         # Final layer with bounded initialization
@@ -42,8 +62,14 @@ class ScoringFunction(nn.Module):
         nn.init.constant_(final_layer.bias, 0.5)
         layers.append(final_layer)
         
-        # Use Softplus with higher beta for sharper transitions
-        layers.append(nn.Softplus(beta=10))
+        # Get final activation configuration
+        final_activation_config = config['scoring_function']['final_activation']
+        if final_activation_config['name'] == 'Softplus':
+            final_activation = nn.Softplus(**final_activation_config['params'])
+        else:
+            raise ValueError(f"Unsupported final activation: {final_activation_config['name']}")
+            
+        layers.append(final_activation)
         
         self.network = nn.Sequential(*layers)
         
@@ -52,7 +78,7 @@ class ScoringFunction(nn.Module):
             if isinstance(m, (nn.Linear, nn.BatchNorm1d)):
                 init_weights(m)
         
-        self.l2_lambda = 0.1  # Stronger L2 regularization
+        self.l2_lambda = config['scoring_function']['l2_lambda']
         
     def forward(self, x):
         scores = self.network(x)

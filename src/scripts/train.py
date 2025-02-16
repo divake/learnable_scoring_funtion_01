@@ -59,7 +59,8 @@ def main():
     scoring_fn = ScoringFunction(
         input_dim=1,
         hidden_dims=config['scoring_function']['hidden_dims'],
-        output_dim=1
+        output_dim=1,
+        config=config
     ).to(config['device'])
     logging.info("Scoring function initialized")
     
