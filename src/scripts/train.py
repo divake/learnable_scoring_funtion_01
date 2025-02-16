@@ -71,8 +71,7 @@ def main():
         cal_loader=dataloaders['calibration'],
         test_loader=dataloaders['test'],
         device=config['device'],
-        lambda1=config['lambda1'],
-        lambda2=config['lambda2']
+        config=config
     )
     
     # Training loop

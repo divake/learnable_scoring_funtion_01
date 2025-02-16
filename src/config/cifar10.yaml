@@ -20,6 +20,21 @@ lambda1: 1.0  # Coverage loss weight
 lambda2: 1.0  # Set size loss weight
 target_coverage: 0.9
 
+# Optimizer configuration
+optimizer:
+  name: 'AdamW'
+  params:
+    lr: 0.001
+    weight_decay: 0.01
+  scheduler:
+    name: 'OneCycleLR'
+    params:
+      max_lr: 0.001
+      pct_start: 0.2
+      div_factor: 20
+      final_div_factor: 100
+      anneal_strategy: 'cos'
+
 # Model architecture
 scoring_function:
   hidden_dims: [64, 32]

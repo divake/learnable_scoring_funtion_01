@@ -6,10 +6,26 @@ import numpy as np
 import os
 import torch
 
+class BasePlot:
+    """Base class for all plots to reduce code duplication"""
+    def __init__(self, figsize=(10, 6)):
+        self.figsize = figsize
+    
+    def setup(self):
+        """Setup the plot"""
+        plt.figure(figsize=self.figsize)
+    
+    def save(self, save_dir, filename):
+        """Save the plot"""
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, filename))
+        plt.close()
+
 def plot_training_curves(epochs, train_losses, train_coverages, train_sizes,
                         val_coverages, val_sizes, tau_values, save_dir):
     """Plot training metrics including tau values."""
-    plt.figure(figsize=(20, 5))
+    plotter = BasePlot(figsize=(20, 5))
+    plotter.setup()
     
     # Plot loss
     plt.subplot(1, 4, 1)
@@ -46,38 +62,12 @@ def plot_training_curves(epochs, train_losses, train_coverages, train_sizes,
     plt.title('Tau vs Epoch')
     plt.legend()
     
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'training_curves.png'))
-    plt.close()
-
-def plot_scoring_function_behavior(scoring_fn, device, save_dir):
-    """Plot the learned scoring function behavior."""
-    # Create input range from 0 to 1
-    softmax_scores = torch.linspace(0, 1, 1000, device=device).reshape(-1, 1)
-    
-    # Get non-conformity scores
-    with torch.no_grad():
-        nonconf_scores = scoring_fn(softmax_scores).cpu().numpy()
-    
-    plt.figure(figsize=(10, 6))
-    plt.plot(softmax_scores.cpu().numpy(), nonconf_scores)
-    plt.xlabel('Softmax Score')
-    plt.ylabel('Non-conformity Score')
-    plt.title('Learned Scoring Function Behavior')
-    plt.grid(True)
-    
-    # Add reference line y=1-x for comparison
-    ref_line = 1 - softmax_scores.cpu().numpy()
-    plt.plot(softmax_scores.cpu().numpy(), ref_line, '--', label='1-p (reference)')
-    
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'scoring_function.png'))
-    plt.close()
+    plotter.save(save_dir, 'training_curves.png')
 
 def plot_score_distributions(true_scores, false_scores, tau, save_dir):
     """Plot distribution of conformity scores."""
-    plt.figure(figsize=(10, 6))
+    plotter = BasePlot()
+    plotter.setup()
     
     sns.kdeplot(true_scores, label='True Class Scores')
     sns.kdeplot(false_scores, label='False Class Scores')
@@ -88,13 +78,12 @@ def plot_score_distributions(true_scores, false_scores, tau, save_dir):
     plt.title('Distribution of Conformity Scores')
     plt.legend()
     
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'score_distributions.png'))
-    plt.close()
+    plotter.save(save_dir, 'score_distributions.png')
 
 def plot_set_size_distribution(set_sizes, save_dir):
     """Plot distribution of prediction set sizes."""
-    plt.figure(figsize=(10, 6))
+    plotter = BasePlot()
+    plotter.setup()
     
     plt.hist(set_sizes, bins=range(11), align='left', rwidth=0.8)
     plt.xlabel('Prediction Set Size')
@@ -102,6 +91,29 @@ def plot_set_size_distribution(set_sizes, save_dir):
     plt.title('Distribution of Prediction Set Sizes')
     plt.xticks(range(10))
     
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'set_size_distribution.png'))
-    plt.close()
+    plotter.save(save_dir, 'set_size_distribution.png')
+
+def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
+    """Plot the learned scoring function behavior."""
+    plotter = BasePlot()
+    plotter.setup()
+    
+    # Create input range from 0 to 1
+    softmax_scores = torch.linspace(0, 1, 1000, device=device).reshape(-1, 1)
+    
+    # Get non-conformity scores
+    with torch.no_grad():
+        nonconf_scores = scoring_fn(softmax_scores).cpu().numpy()
+    
+    plt.plot(softmax_scores.cpu().numpy(), nonconf_scores)
+    plt.xlabel('Softmax Score')
+    plt.ylabel('Non-conformity Score')
+    plt.title('Learned Scoring Function Behavior')
+    plt.grid(True)
+    
+    # Add reference line y=1-x for comparison
+    ref_line = 1 - softmax_scores.cpu().numpy()
+    plt.plot(softmax_scores.cpu().numpy(), ref_line, '--', label='1-p (reference)')
+    plt.legend()
+    
+    plotter.save(plot_dir, 'scoring_function.png')
