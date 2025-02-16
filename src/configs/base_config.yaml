@@ -1,0 +1,34 @@
+# Base configuration for all experiments
+
+# Paths
+base_dir: /ssd_4TB/divake/learnable_scoring_funtion_01
+data_dir: data
+model_dir: models
+plot_dir: plots
+log_dir: logs
+
+# Training parameters
+num_epochs: 50
+batch_size: 128
+learning_rate: 0.001
+lambda1: 1.0  # Coverage loss weight
+lambda2: 1.0  # Set size loss weight
+target_coverage: 0.9
+
+# Model architecture
+scoring_function:
+  hidden_dims: [64, 32]
+  dropout: 0.2
+  l2_lambda: 0.1
+
+# Training constraints
+tau:
+  min: 0.1
+  max: 0.9
+  window_size: 5
+
+# Set size constraints
+set_size:
+  target: 1.2
+  max: 3.0
+  margin: 0.2 

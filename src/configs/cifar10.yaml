@@ -1,0 +1,20 @@
+# CIFAR-10 specific configuration
+inherit: base_config.yaml
+
+dataset:
+  name: cifar10
+  num_classes: 10
+  input_size: [32, 32]
+  mean: [0.4914, 0.4822, 0.4465]
+  std: [0.2023, 0.1994, 0.2010]
+
+model:
+  architecture: resnet18
+  pretrained_path: models/resnet18_cifar10_best.pth
+
+# Data splits
+splits:
+  train_size: 0.7
+  val_size: 0.1
+  cal_size: 0.1
+  test_size: 0.1 
