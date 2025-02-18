@@ -1,6 +1,9 @@
 # CIFAR-100 specific configuration
 inherit: base_config.yaml
 
+# Device configuration
+device: 0
+
 dataset:
   name: cifar100
   num_classes: 100
@@ -73,4 +76,4 @@ tau:
 set_size:
   target: 1.2
   max: 5.0
-  margin: 0.5 
+  margin: 1

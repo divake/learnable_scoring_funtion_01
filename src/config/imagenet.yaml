@@ -1,6 +1,9 @@
 # ImageNet specific configuration
 inherit: base_config.yaml
 
+# Device configuration
+device: 1
+
 dataset:
   name: imagenet
   num_classes: 1000
@@ -78,4 +81,4 @@ tau:
 set_size:
   target: 1.2
   max: 5.0
-  margin: 0.5 
+  margin: 1 

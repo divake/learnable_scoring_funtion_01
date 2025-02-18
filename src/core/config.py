@@ -83,8 +83,21 @@ class ConfigManager:
                 self.config[path] = full_path
     
     def setup_device(self):
-        """Setup and return torch device"""
-        self.config['device'] = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        """Setup and return torch device based on config or availability"""
+        if 'device' in self.config:
+            # Use device specified in config
+            if isinstance(self.config['device'], int):
+                # If device is specified as an integer (GPU index)
+                if torch.cuda.is_available():
+                    self.config['device'] = torch.device(f'cuda:{self.config["device"]}')
+                else:
+                    raise RuntimeError(f"CUDA device {self.config['device']} specified but CUDA is not available")
+            else:
+                # If device is specified as a string (e.g., 'cuda:0', 'cpu')
+                self.config['device'] = torch.device(self.config['device'])
+        else:
+            # Fallback to default behavior
+            self.config['device'] = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
     def __getitem__(self, key):
         """Allow dictionary-like access to config"""
