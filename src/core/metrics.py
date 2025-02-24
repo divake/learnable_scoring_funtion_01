@@ -6,14 +6,7 @@ import numpy as np
 def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9, tau_config=None):
     """
     Compute tau threshold for desired coverage on calibration set with constraints and smoothing
-    
-    Args:
-        cal_loader: Calibration data loader
-        scoring_fn: Scoring function model
-        base_model: Base classification model
-        device: Device to run computation on
-        coverage_target: Target coverage level
-        tau_config: Dictionary containing tau constraints (min, max, window_size)
+    Using vectorized approach for efficiency
     """
     if tau_config is None:
         raise ValueError("tau_config must be provided with min, max, and window_size values")
@@ -21,7 +14,6 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
     scoring_fn.eval()
     base_model.eval()
     all_scores = []
-    all_labels = []
     
     with torch.no_grad():
         for inputs, targets in cal_loader:
@@ -32,15 +24,18 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
             logits = base_model(inputs)
             probs = torch.softmax(logits, dim=1)
             
-            # Calculate scores for true class
-            true_probs = probs[torch.arange(len(targets)), targets].unsqueeze(1)
-            scores = scoring_fn(true_probs)
+            # Vectorized approach to compute all scores at once
+            batch_size, num_classes = probs.shape
+            flat_probs = probs.reshape(-1, 1)
+            flat_scores = scoring_fn(flat_probs)
+            scores = flat_scores.reshape(batch_size, num_classes)
             
-            all_scores.append(scores.cpu())
-            all_labels.append(targets.cpu())
+            # Extract only true class scores for tau calculation
+            true_scores = scores[torch.arange(len(targets)), targets]
+            all_scores.append(true_scores.cpu())
     
     # Concatenate all scores and labels
-    all_scores = torch.cat(all_scores, dim=0).squeeze()
+    all_scores = torch.cat(all_scores, dim=0)
     
     # Sort scores for quantile computation
     sorted_scores, _ = torch.sort(all_scores)

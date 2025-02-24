@@ -183,16 +183,21 @@ class ScoringFunctionTrainer:
         logging.info("Training completed!")
     
     def _compute_scores(self, inputs, targets=None):
-        """Helper method to compute scores for inputs"""
+        """Helper method to compute scores for inputs using vectorized approach"""
         with torch.no_grad():
             logits = self.base_model(inputs)
             probs = torch.softmax(logits, dim=1)
         
-        scores = torch.zeros_like(probs, device=self.device)
-        for i in range(probs.size(1)):
-            class_probs = probs[:, i:i+1]
-            scores[:, i:i+1] = self.scoring_fn(class_probs)
-            
+        # Vectorized approach: reshape to process all probabilities at once
+        batch_size, num_classes = probs.shape
+        flat_probs = probs.reshape(-1, 1)  # Reshape to (batch_size * num_classes, 1)
+        
+        # Process all probabilities in a single forward pass
+        flat_scores = self.scoring_fn(flat_probs)
+        
+        # Reshape back to original dimensions
+        scores = flat_scores.reshape(batch_size, num_classes)
+        
         if targets is not None:
             target_scores = scores[torch.arange(len(targets)), targets]
             return scores, target_scores, probs
