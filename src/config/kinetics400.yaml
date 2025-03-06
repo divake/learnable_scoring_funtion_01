@@ -1,0 +1,75 @@
+# Kinetics-400 specific configuration
+inherit: base_config.yaml
+
+# Device configuration
+device: 0  # Use first GPU (cuda:0)
+multi_gpu: true  # Enable multi-GPU training with DataParallel
+
+dataset:
+  name: kinetics400
+  num_classes: 400
+  feature_dir: "/ssd_4TB/divake/vivit_kinetics400/kinetics400_features_extended"
+  feature_dim: 768  # VideoMAE feature dimension
+
+# Paths
+plot_dir: plots/kinetics400_videomae
+log_dir: logs/kinetics400_videomae
+
+# Training parameters
+num_epochs: 100
+batch_size: 64
+learning_rate: 0.0005
+lambda1: 1.5  # Coverage loss weight
+lambda2: 1.0  # Set size loss weight
+target_coverage: 0.9
+
+# Training configuration
+training:
+  grad_clip:
+    enabled: true
+    max_norm: 1.0
+  loss_weights:
+    coverage: 1.5
+    size: 1.0
+    margin: 0.3
+
+# Optimizer configuration
+optimizer:
+  name: 'AdamW'
+  params:
+    lr: 0.0005
+    weight_decay: 0.005
+  scheduler:
+    name: 'OneCycleLR'
+    params:
+      max_lr: 0.001
+      pct_start: 0.3
+      div_factor: 10
+      final_div_factor: 50
+      anneal_strategy: 'cos'
+
+# Model architecture - adjusted for VideoMAE features
+scoring_function:
+  hidden_dims: [512, 256, 128]  # Increased from [128, 64, 32] for higher-dimensional features
+  dropout: 0.2
+  l2_lambda: 0.05
+  activation:
+    name: 'LeakyReLU'
+    params:
+      negative_slope: 0.1
+  final_activation:
+    name: 'Softplus'
+    params:
+      beta: 5
+
+# Training constraints
+tau:
+  min: 0.05
+  max: 0.95
+  window_size: 10
+
+# Set size constraints
+set_size:
+  target: 1.5
+  max: 5.0
+  margin: 0.5 
