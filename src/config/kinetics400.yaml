@@ -31,7 +31,7 @@ training:
   loss_weights:
     coverage: 1.5
     size: 1.0
-    margin: 0.3
+    margin: 1
 
 # Optimizer configuration
 optimizer:
@@ -72,4 +72,4 @@ tau:
 set_size:
   target: 1.5
   max: 5.0
-  margin: 0.5 
+  margin: 1 
