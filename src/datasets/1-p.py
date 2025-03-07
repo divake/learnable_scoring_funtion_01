@@ -4,8 +4,12 @@ import numpy as np
 import os
 import logging
 from tqdm import tqdm
-
-from src.datasets.cifar10 import Dataset as CIFAR10Dataset
+import copy
+import argparse
+import yaml
+import json
+import sys
+import traceback
 
 class OneMinus_P_Scorer:
     """
@@ -18,16 +22,69 @@ class OneMinus_P_Scorer:
         self.target_coverage = config['target_coverage']
         self.tau = None  # Will be set during calibration
         
-        # Initialize dataset
-        if config['dataset']['name'] == 'cifar10':
-            self.dataset = CIFAR10Dataset(config)
-            self.dataset.setup()
-        else:
-            raise ValueError(f"Dataset {config['dataset']['name']} not supported yet")
+        # Initialize dataset based on configuration
+        dataset_name = config['dataset']['name']
+        logging.info(f"Initializing 1-p scorer for {dataset_name} dataset")
         
-        # Load the base model
-        self.model = self.dataset.get_model()
-        self.model.eval()  # Set to evaluation mode
+        # Create a copy of the config to modify for dataset-specific settings
+        dataset_config = copy.deepcopy(config)
+        
+        # Apply dataset-specific model path
+        if 'model_paths' in config and dataset_name in config['model_paths']:
+            dataset_config['model']['pretrained_path'] = config['model_paths'][dataset_name]
+            logging.info(f"Using model path: {dataset_config['model']['pretrained_path']}")
+        
+        # Apply model-specific configurations
+        if 'model_configs' in config and dataset_name in config['model_configs']:
+            for key, value in config['model_configs'][dataset_name].items():
+                dataset_config['model'][key] = value
+            logging.info(f"Applied {dataset_name}-specific model configuration")
+        
+        # Apply dataset-specific data directory if available
+        if dataset_name in config and 'data_dir' in config[dataset_name]:
+            dataset_config['data_dir'] = config[dataset_name]['data_dir']
+            logging.info(f"Using dataset-specific data directory: {dataset_config['data_dir']}")
+        
+        # Fix the device configuration to use a proper device object instead of an integer
+        dataset_config['device'] = self.device
+        
+        # Patch torch.load to handle integer device IDs
+        original_torch_load = torch.load
+        
+        def patched_torch_load(path, map_location=None, **kwargs):
+            if isinstance(map_location, int):
+                # Convert integer to proper device string
+                map_location = f'cuda:{map_location}' if torch.cuda.is_available() else 'cpu'
+            return original_torch_load(path, map_location=map_location, **kwargs)
+        
+        # Replace torch.load with our patched version
+        torch.load = patched_torch_load
+        
+        # Import the appropriate dataset class directly
+        if dataset_name == 'cifar10':
+            from src.datasets.cifar10 import Dataset
+        elif dataset_name == 'cifar100':
+            from src.datasets.cifar100 import Dataset
+        elif dataset_name == 'imagenet':
+            from src.datasets.imagenet import Dataset
+        else:
+            raise ValueError(f"Dataset {dataset_name} not supported")
+        
+        # Initialize the dataset with the modified config
+        self.dataset = Dataset(dataset_config)
+        self.dataset.setup()
+        
+        # Get the model from the dataset
+        try:
+            self.model = self.dataset.get_model()
+            logging.info("Successfully loaded model")
+        except Exception as e:
+            logging.error(f"Error loading model: {str(e)}")
+            logging.error(f"Traceback: {traceback.format_exc()}")
+            raise
+        
+        # Ensure model is in evaluation mode
+        self.model.eval()
         
     def calibrate(self):
         """
@@ -69,11 +126,21 @@ class OneMinus_P_Scorer:
         covered_samples = 0
         set_sizes = []
         
+        # Debug: collect probability distributions
+        all_max_probs = []
+        all_second_probs = []
+        empty_set_count = 0
+        
         with torch.no_grad():
             for inputs, targets in tqdm(self.dataset.test_loader, desc="Evaluation"):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
                 probabilities = F.softmax(outputs, dim=1)
+                
+                # Debug: collect top probabilities
+                top_probs, _ = torch.topk(probabilities, k=2, dim=1)
+                all_max_probs.extend(top_probs[:, 0].cpu().numpy())
+                all_second_probs.extend(top_probs[:, 1].cpu().numpy())
                 
                 for i in range(len(targets)):
                     prediction_set = []
@@ -82,6 +149,13 @@ class OneMinus_P_Scorer:
                         nonconformity_score = 1 - probabilities[i, class_idx].item()
                         if nonconformity_score <= self.tau:
                             prediction_set.append(class_idx)
+                    
+                    # Check for empty prediction sets
+                    if len(prediction_set) == 0:
+                        empty_set_count += 1
+                        # Ensure at least one prediction (most likely class)
+                        _, top_class = torch.max(probabilities[i], 0)
+                        prediction_set.append(top_class.item())
                     
                     # Check if true class is in the prediction set
                     is_covered = targets[i].item() in prediction_set
@@ -94,7 +168,20 @@ class OneMinus_P_Scorer:
         average_set_size = np.mean(set_sizes)
         median_set_size = np.median(set_sizes)
         
+        # Debug: print probability statistics
+        logging.info(f"Debug - Average max probability: {np.mean(all_max_probs):.4f}")
+        logging.info(f"Debug - Average second highest probability: {np.mean(all_second_probs):.4f}")
+        
+        # Debug: print set size distribution
+        set_size_counts = np.bincount(set_sizes)
+        logging.info(f"Debug - Empty prediction sets (before correction): {empty_set_count}")
+        logging.info(f"Debug - Set size distribution:")
+        for size, count in enumerate(set_size_counts):
+            if count > 0:
+                logging.info(f"  Size {size}: {count} samples ({count/total_samples*100:.2f}%)")
+        
         results = {
+            "dataset": self.config['dataset']['name'],
             "tau": self.tau,
             "target_coverage": self.target_coverage,
             "empirical_coverage": empirical_coverage,
@@ -105,7 +192,7 @@ class OneMinus_P_Scorer:
             "set_size_max": np.max(set_sizes),
         }
         
-        logging.info(f"Evaluation Results:")
+        logging.info(f"Evaluation Results for {self.config['dataset']['name']}:")
         logging.info(f"  Target Coverage: {self.target_coverage:.4f}")
         logging.info(f"  Empirical Coverage: {empirical_coverage:.4f}")
         logging.info(f"  Average Set Size: {average_set_size:.4f}")
@@ -113,55 +200,184 @@ class OneMinus_P_Scorer:
         
         return results
 
-def main(config):
+def run_dataset(config, dataset_name):
+    """
+    Run the 1-p scoring function evaluation for a specific dataset.
+    
+    Args:
+        config: Configuration dictionary
+        dataset_name: Name of the dataset to evaluate
+    
+    Returns:
+        Results dictionary
+    """
+    # Update config with dataset name
+    dataset_config = copy.deepcopy(config)
+    dataset_config['dataset']['name'] = dataset_name
+    
+    # Setup logging for this dataset
+    log_dir = os.path.join(config['log_dir'], dataset_name)
+    os.makedirs(log_dir, exist_ok=True)
+    
+    log_file = os.path.join(log_dir, f'1-p_evaluation_{dataset_name}.log')
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    
+    # Add the file handler to the root logger
+    root_logger = logging.getLogger()
+    root_logger.addHandler(file_handler)
+    
+    try:
+        logging.info(f"=== Starting evaluation for {dataset_name} dataset ===")
+        
+        # For ImageNet, load the dataset-specific configuration
+        if dataset_name == 'imagenet':
+            # Load ImageNet-specific configuration
+            imagenet_config_path = os.path.join(config['base_dir'], 'src', 'config', 'imagenet.yaml')
+            if os.path.exists(imagenet_config_path):
+                with open(imagenet_config_path, 'r') as f:
+                    imagenet_config = yaml.safe_load(f)
+                    # Update data_dir from imagenet.yaml
+                    if 'data_dir' in imagenet_config:
+                        dataset_config['data_dir'] = imagenet_config['data_dir']
+                        logging.info(f"Using data_dir from imagenet.yaml: {dataset_config['data_dir']}")
+                    # Update batch_size from imagenet.yaml
+                    if 'batch_size' in imagenet_config:
+                        dataset_config['batch_size'] = imagenet_config['batch_size']
+                        logging.info(f"Using batch_size from imagenet.yaml: {dataset_config['batch_size']}")
+        
+        # Initialize and run the 1-p scorer
+        try:
+            scorer = OneMinus_P_Scorer(dataset_config)
+            scorer.calibrate()
+            results = scorer.evaluate()
+            
+            # Convert NumPy types to Python native types for JSON serialization
+            json_results = {}
+            for key, value in results.items():
+                if isinstance(value, np.integer):
+                    json_results[key] = int(value)
+                elif isinstance(value, np.floating):
+                    json_results[key] = float(value)
+                elif isinstance(value, np.ndarray):
+                    json_results[key] = value.tolist()
+                else:
+                    json_results[key] = value
+            
+            # Save results
+            results_file = os.path.join(log_dir, f'1-p_results_{dataset_name}.json')
+            with open(results_file, 'w') as f:
+                json.dump(json_results, f, indent=4)
+            
+            logging.info(f"Results saved to {results_file}")
+            logging.info(f"=== Completed evaluation for {dataset_name} dataset ===\n")
+            
+            return json_results
+        except ValueError as e:
+            if "num_samples" in str(e):
+                logging.error(f"Error running 1-p evaluation for {dataset_name}: {str(e)}")
+                logging.error(f"Traceback: {traceback.format_exc()}")
+                return {"error": str(e)}
+            else:
+                raise
+    except Exception as e:
+        logging.error(f"Error running 1-p evaluation for {dataset_name}: {str(e)}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        return {"error": str(e)}
+    finally:
+        # Remove the file handler to avoid duplicate log entries
+        root_logger.removeHandler(file_handler)
+
+def main():
     """
     Main function to run the 1-p scoring evaluation.
     """
-    # Setup logging
-    log_dir = config['log_dir']
-    os.makedirs(log_dir, exist_ok=True)
+    parser = argparse.ArgumentParser(description='Run 1-p scoring evaluation')
+    parser.add_argument('--config', type=str, default='src/config/1-p.yaml', help='Path to config file')
+    parser.add_argument('--dataset', type=str, default='all', 
+                        choices=['all', 'cifar10', 'cifar100', 'imagenet'],
+                        help='Dataset to evaluate (default: all)')
+    args = parser.parse_args()
+    
+    # Setup basic logging
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(os.path.join(log_dir, '1-p_evaluation.log')),
-            logging.StreamHandler()
-        ]
+        handlers=[logging.StreamHandler()]
     )
     
-    # Initialize and run the 1-p scorer
-    scorer = OneMinus_P_Scorer(config)
-    scorer.calibrate()
-    results = scorer.evaluate()
-    
-    # Convert NumPy types to Python native types for JSON serialization
-    json_results = {}
-    for key, value in results.items():
-        if isinstance(value, np.integer):
-            json_results[key] = int(value)
-        elif isinstance(value, np.floating):
-            json_results[key] = float(value)
-        elif isinstance(value, np.ndarray):
-            json_results[key] = value.tolist()
-        else:
-            json_results[key] = value
-    
-    # Save results
-    import json
-    with open(os.path.join(log_dir, '1-p_results.json'), 'w') as f:
-        json.dump(json_results, f, indent=4)
-    
-    return results
-
-if __name__ == "__main__":
-    import yaml
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Run 1-p scoring evaluation')
-    parser.add_argument('--config', type=str, default='src/config/1-p.yaml', help='Path to config file')
-    args = parser.parse_args()
-    
+    # Load configuration
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
     
-    main(config) 
+    # Create summary directory
+    summary_dir = os.path.join(config['log_dir'], 'summary')
+    os.makedirs(summary_dir, exist_ok=True)
+    
+    # Determine which datasets to run
+    if args.dataset == 'all':
+        datasets = ['cifar10', 'cifar100', 'imagenet']
+        logging.info("Running evaluation for all datasets: CIFAR-10, CIFAR-100, and ImageNet")
+    else:
+        datasets = [args.dataset]
+        logging.info(f"Running evaluation for {args.dataset} dataset")
+    
+    # Run evaluation for each dataset
+    all_results = {}
+    for dataset in datasets:
+        try:
+            results = run_dataset(config, dataset)
+            all_results[dataset] = results
+        except Exception as e:
+            logging.error(f"Failed to run evaluation for {dataset}: {str(e)}")
+            logging.error(f"Traceback: {traceback.format_exc()}")
+            all_results[dataset] = {"error": str(e)}
+    
+    # Save summary of all results
+    summary_file = os.path.join(summary_dir, '1-p_summary.json')
+    
+    # Convert NumPy types to Python native types for JSON serialization
+    json_results = {}
+    for dataset, results in all_results.items():
+        json_results[dataset] = {}
+        for key, value in results.items():
+            if isinstance(value, np.integer):
+                json_results[dataset][key] = int(value)
+            elif isinstance(value, np.floating):
+                json_results[dataset][key] = float(value)
+            elif isinstance(value, np.ndarray):
+                json_results[dataset][key] = value.tolist()
+            else:
+                json_results[dataset][key] = value
+    
+    with open(summary_file, 'w') as f:
+        json.dump(json_results, f, indent=4)
+    
+    logging.info(f"Summary results saved to {summary_file}")
+    
+    # Print summary table
+    logging.info("\n=== 1-p Scoring Function Evaluation Summary ===")
+    logging.info(f"{'Dataset':<10} | {'Coverage':<10} | {'Avg Set Size':<15} | {'Median Set Size':<15}")
+    logging.info("-" * 60)
+    
+    for dataset, results in all_results.items():
+        if "error" in results:
+            logging.info(f"{dataset:<10} | {'ERROR':<10} | {'N/A':<15} | {'N/A':<15}")
+        else:
+            coverage = results.get("empirical_coverage", "N/A")
+            avg_size = results.get("average_set_size", "N/A")
+            median_size = results.get("median_set_size", "N/A")
+            
+            if isinstance(coverage, float):
+                coverage = f"{coverage:.4f}"
+            if isinstance(avg_size, float):
+                avg_size = f"{avg_size:.4f}"
+            if isinstance(median_size, float):
+                median_size = f"{median_size:.4f}"
+                
+            logging.info(f"{dataset:<10} | {coverage:<10} | {avg_size:<15} | {median_size:<15}")
+    
+    return all_results
+
+if __name__ == "__main__":
+    main() 
