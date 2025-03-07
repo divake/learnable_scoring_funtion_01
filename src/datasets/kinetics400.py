@@ -6,6 +6,7 @@ from torch.utils.data import TensorDataset, DataLoader
 import json
 import glob
 from typing import Dict, Any
+from tqdm import tqdm
 
 class Dataset:
     """
@@ -35,6 +36,11 @@ class Dataset:
         logging.info(f"  Calibration: {self.cal_features.shape[0]} samples")
         logging.info(f"  Test: {self.test_features.shape[0]} samples")
         logging.info(f"  Feature dimension: {self.train_features.shape[1]}")
+        
+        # Calculate class distribution
+        unique_classes, class_counts = np.unique(self.train_labels, return_counts=True)
+        logging.info(f"  Number of classes: {len(unique_classes)}")
+        logging.info(f"  Samples per class: min={np.min(class_counts)}, max={np.max(class_counts)}, avg={np.mean(class_counts):.1f}")
     
     def _load_data(self):
         """Load pre-extracted features and labels from the VideoMAE model"""
@@ -74,12 +80,13 @@ class Dataset:
         
         logging.info(f"Found {len(train_files)} train files, {len(val_files)} val files, {len(test_files)} test files")
         
-        # Load train features and labels
+        # Load train features and labels with progress bar
         train_features = []
         train_labels = []
         train_logits = []
         
-        for file_path in train_files:
+        logging.info("Loading train features and labels...")
+        for file_path in tqdm(train_files, desc="Loading train data"):
             data = np.load(file_path)
             train_features.append(data['features'])
             train_labels.append(data['label'])
@@ -91,7 +98,8 @@ class Dataset:
         cal_labels = []
         cal_logits = []
         
-        for file_path in val_files:
+        logging.info("Loading validation features and labels...")
+        for file_path in tqdm(val_files, desc="Loading validation data"):
             data = np.load(file_path)
             cal_features.append(data['features'])
             cal_labels.append(data['label'])
@@ -103,7 +111,8 @@ class Dataset:
         test_labels = []
         test_logits = []
         
-        for file_path in test_files:
+        logging.info("Loading test features and labels...")
+        for file_path in tqdm(test_files, desc="Loading test data"):
             data = np.load(file_path)
             test_features.append(data['features'])
             test_labels.append(data['label'])
@@ -194,7 +203,7 @@ class Dataset:
             Dictionary of DataLoaders for each split
         """
         batch_size = self.config.get('batch_size', 128)
-        num_workers = 4
+        num_workers = min(8, os.cpu_count() or 4)  # Use more workers for larger dataset
         
         # Check if we have logits available
         has_logits = hasattr(self, 'train_logits') and hasattr(self, 'cal_logits') and hasattr(self, 'test_logits')

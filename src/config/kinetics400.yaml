@@ -2,7 +2,7 @@
 inherit: base_config.yaml
 
 # Device configuration
-device: 0  # Use first GPU (cuda:0)
+device: 1  # Use first GPU (cuda:0)
 multi_gpu: true  # Enable multi-GPU training with DataParallel
 
 dataset:
@@ -10,15 +10,16 @@ dataset:
   num_classes: 400
   feature_dir: "/ssd_4TB/divake/vivit_kinetics400/kinetics400_features_extended"
   feature_dim: 768  # VideoMAE feature dimension
+  samples_per_class: 10  # Now we have 10 samples per class
 
 # Paths
 plot_dir: plots/kinetics400_videomae
 log_dir: logs/kinetics400_videomae
 
-# Training parameters
-num_epochs: 100
-batch_size: 64
-learning_rate: 0.0005
+# Training parameters - adjusted for larger dataset
+num_epochs: 150  # Increased from 100 to 150 for better convergence with more data
+batch_size: 128  # Increased from 64 to 128 since we have more data
+learning_rate: 0.0003  # Slightly reduced for more stable training with larger batches
 lambda1: 1.5  # Coverage loss weight
 lambda2: 1.0  # Set size loss weight
 target_coverage: 0.9
@@ -37,7 +38,7 @@ training:
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.0005
+    lr: 0.0003  # Adjusted to match learning_rate above
     weight_decay: 0.005
   scheduler:
     name: 'OneCycleLR'
@@ -48,11 +49,11 @@ optimizer:
       final_div_factor: 50
       anneal_strategy: 'cos'
 
-# Model architecture - adjusted for VideoMAE features
+# Model architecture - adjusted for VideoMAE features and larger dataset
 scoring_function:
-  hidden_dims: [512, 256, 128]  # Increased from [128, 64, 32] for higher-dimensional features
-  dropout: 0.2
-  l2_lambda: 0.05
+  hidden_dims: [768, 512, 256]  # Increased capacity for better learning with more data
+  dropout: 0.3  # Increased from 0.2 to 0.3 to prevent overfitting with more data
+  l2_lambda: 0.01  # Increased from 0.05 to 0.01 for better regularization
   activation:
     name: 'LeakyReLU'
     params:
