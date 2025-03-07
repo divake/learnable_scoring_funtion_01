@@ -69,12 +69,25 @@ def plot_score_distributions(true_scores, false_scores, tau, save_dir):
     plotter = BasePlot()
     plotter.setup()
     
-    sns.kdeplot(true_scores, label='True Class Scores')
-    sns.kdeplot(false_scores, label='False Class Scores')
+    # Check variance of scores to avoid KDE warnings
+    true_var = np.var(true_scores) if len(true_scores) > 0 else 0
+    false_var = np.var(false_scores) if len(false_scores) > 0 else 0
+    
+    # Use KDE for scores with sufficient variance, otherwise use histograms
+    if true_var > 1e-10:
+        sns.kdeplot(true_scores, label='True Class Scores')
+    else:
+        plt.hist(true_scores, bins=10, alpha=0.5, label='True Class Scores')
+        
+    if false_var > 1e-10:
+        sns.kdeplot(false_scores, label='False Class Scores')
+    else:
+        plt.hist(false_scores, bins=10, alpha=0.5, label='False Class Scores')
+    
     plt.axvline(x=tau, color='r', linestyle='--', label='Tau Threshold')
     
     plt.xlabel('Non-Conformity Score')
-    plt.ylabel('Density')
+    plt.ylabel('Density/Frequency')
     plt.title('Distribution of Conformity Scores')
     plt.legend()
     
