@@ -1,0 +1,32 @@
+# 1-p scoring function configuration for CIFAR-10
+inherit: base_config.yaml
+
+# Device configuration
+device: 0  # Use first GPU (cuda:0)
+
+# Directory paths
+data_dir: data  # Directory where datasets are stored
+base_dir: .     # Base directory for relative paths
+
+dataset:
+  name: cifar10
+  num_classes: 10
+  input_size: [32, 32]
+  mean: [0.4914, 0.4822, 0.4465]
+  std: [0.2023, 0.1994, 0.2010]
+
+model:
+  architecture: resnet18
+  pretrained_path: models/resnet18_cifar10_best.pth 
+
+# Paths
+plot_dir: plots/1-p_cifar10
+log_dir: logs/1-p_cifar10
+
+# Batch size for evaluation
+batch_size: 128
+
+# Target coverage
+target_coverage: 0.9
+
+# No need for training parameters since 1-p doesn't require training 
