@@ -11,10 +11,10 @@ import json
 import sys
 import traceback
 
-class OneMinus_P_Scorer:
+class APS_Scorer:
     """
-    Implementation of the 1-p scoring function for conformal prediction.
-    This class handles calibration and prediction using the 1-p scoring approach.
+    Implementation of the Adaptive Prediction Sets (APS) scoring function for conformal prediction.
+    This class handles calibration and prediction using the APS approach.
     """
     def __init__(self, config):
         self.config = config
@@ -24,7 +24,7 @@ class OneMinus_P_Scorer:
         
         # Initialize dataset based on configuration
         dataset_name = config['dataset']['name']
-        logging.info(f"Initializing 1-p scorer for {dataset_name} dataset")
+        logging.info(f"Initializing APS scorer for {dataset_name} dataset")
         
         # Create a copy of the config to modify for dataset-specific settings
         dataset_config = copy.deepcopy(config)
@@ -89,8 +89,11 @@ class OneMinus_P_Scorer:
     def calibrate(self):
         """
         Calibrate the model using the calibration dataset to determine tau.
+        
+        For APS, we compute the cumulative probability before the true class
+        for each calibration sample and set tau as the (1-alpha)-quantile.
         """
-        logging.info("Calibrating using 1-p scoring function...")
+        logging.info("Calibrating using APS scoring function...")
         self.model.eval()
         nonconformity_scores = []
         
@@ -100,12 +103,27 @@ class OneMinus_P_Scorer:
                 outputs = self.model(inputs)
                 probabilities = F.softmax(outputs, dim=1)
                 
-                # For each sample, get the probability of the true class
+                # For each sample, compute APS score
                 for i in range(len(targets)):
-                    true_class_prob = probabilities[i, targets[i]].item()
-                    # 1-p scoring function
-                    nonconformity_score = 1 - true_class_prob
-                    nonconformity_scores.append(nonconformity_score)
+                    # Get true class
+                    true_class = targets[i].item()
+                    
+                    # Sort probabilities in descending order
+                    sorted_probs, sorted_indices = torch.sort(probabilities[i], descending=True)
+                    
+                    # Compute cumulative sums
+                    cum_probs = torch.cumsum(sorted_probs, dim=0)
+                    
+                    # Find position of true class in sorted indices
+                    true_class_pos = (sorted_indices == true_class).nonzero(as_tuple=True)[0].item()
+                    
+                    # Compute score: cumulative probability before true class
+                    if true_class_pos > 0:
+                        score = cum_probs[true_class_pos - 1].item()
+                    else:
+                        score = 0.0  # True class is most probable
+                    
+                    nonconformity_scores.append(score)
         
         # Calculate tau as the percentile corresponding to target coverage
         # For 90% coverage, we use the 90th percentile
@@ -143,19 +161,23 @@ class OneMinus_P_Scorer:
                 all_second_probs.extend(top_probs[:, 1].cpu().numpy())
                 
                 for i in range(len(targets)):
-                    prediction_set = []
-                    for class_idx in range(probabilities.size(1)):
-                        # 1-p scoring function for each potential class
-                        nonconformity_score = 1 - probabilities[i, class_idx].item()
-                        if nonconformity_score <= self.tau:
-                            prediction_set.append(class_idx)
+                    # Sort probabilities in descending order
+                    sorted_probs, sorted_indices = torch.sort(probabilities[i], descending=True)
+                    
+                    # Compute cumulative sums
+                    cum_probs = torch.cumsum(sorted_probs, dim=0)
+                    
+                    # Find the smallest k such that cum_probs[k] > tau
+                    k = torch.searchsorted(cum_probs, self.tau, right=True).item()
+                    
+                    # Create prediction set
+                    prediction_set = sorted_indices[:k+1].cpu().numpy().tolist()
                     
                     # Check for empty prediction sets
                     if len(prediction_set) == 0:
                         empty_set_count += 1
                         # Ensure at least one prediction (most likely class)
-                        _, top_class = torch.max(probabilities[i], 0)
-                        prediction_set.append(top_class.item())
+                        prediction_set = [sorted_indices[0].item()]
                     
                     # Check if true class is in the prediction set
                     is_covered = targets[i].item() in prediction_set
@@ -200,14 +222,14 @@ class OneMinus_P_Scorer:
         
         return results
 
-def run_dataset(config, dataset_name, scoring_name="1-p"):
+def run_dataset(config, dataset_name, scoring_name="APS"):
     """
-    Run the scoring function evaluation for a specific dataset.
+    Run the APS scoring function evaluation for a specific dataset.
     
     Args:
         config: Configuration dictionary
         dataset_name: Name of the dataset to evaluate
-        scoring_name: Name of the scoring function (default: "1-p")
+        scoring_name: Name of the scoring function (default: "APS")
     
     Returns:
         Results dictionary
@@ -247,9 +269,9 @@ def run_dataset(config, dataset_name, scoring_name="1-p"):
                         dataset_config['batch_size'] = imagenet_config['batch_size']
                         logging.info(f"Using batch_size from imagenet.yaml: {dataset_config['batch_size']}")
         
-        # Initialize and run the scorer
+        # Initialize and run the APS scorer
         try:
-            scorer = OneMinus_P_Scorer(dataset_config)
+            scorer = APS_Scorer(dataset_config)
             scorer.calibrate()
             results = scorer.evaluate()
             
@@ -291,16 +313,13 @@ def run_dataset(config, dataset_name, scoring_name="1-p"):
 
 def main():
     """
-    Main function to run the scoring function evaluation.
+    Main function to run the APS scoring evaluation.
     """
-    parser = argparse.ArgumentParser(description='Run scoring function evaluation')
-    parser.add_argument('--config', type=str, default='src/config/1-p.yaml', help='Path to config file')
+    parser = argparse.ArgumentParser(description='Run APS scoring evaluation')
+    parser.add_argument('--config', type=str, default='src/config/aps.yaml', help='Path to config file')
     parser.add_argument('--dataset', type=str, default='all', 
                         choices=['all', 'cifar10', 'cifar100', 'imagenet'],
                         help='Dataset to evaluate (default: all)')
-    parser.add_argument('--scoring', type=str, default='1-p',
-                        choices=['1-p', 'APS'],
-                        help='Scoring function to use (default: 1-p)')
     args = parser.parse_args()
     
     # Setup basic logging
@@ -310,29 +329,9 @@ def main():
         handlers=[logging.StreamHandler()]
     )
     
-    # Load configuration based on scoring function
-    if args.scoring == 'APS':
-        config_path = args.config.replace('1-p.yaml', 'aps.yaml')
-        if not os.path.exists(config_path):
-            config_path = 'src/config/aps.yaml'
-        
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        
-        # Import APS scorer
-        from src.datasets.aps import APS_Scorer as Scorer
-        from src.datasets.aps import run_dataset as run_dataset_func
-        
-        logging.info(f"Using APS scoring function with config from {config_path}")
-    else:  # Default to 1-p
-        with open(args.config, 'r') as f:
-            config = yaml.safe_load(f)
-        
-        # Use 1-p scorer (default)
-        Scorer = OneMinus_P_Scorer
-        run_dataset_func = run_dataset
-        
-        logging.info(f"Using 1-p scoring function with config from {args.config}")
+    # Load configuration
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
     
     # Create summary directory
     summary_dir = os.path.join(config['log_dir'], 'summary')
@@ -341,7 +340,7 @@ def main():
     # Determine which datasets to run
     if args.dataset == 'all':
         datasets = ['cifar10', 'cifar100', 'imagenet']
-        logging.info(f"Running evaluation for all datasets: CIFAR-10, CIFAR-100, and ImageNet")
+        logging.info("Running evaluation for all datasets: CIFAR-10, CIFAR-100, and ImageNet")
     else:
         datasets = [args.dataset]
         logging.info(f"Running evaluation for {args.dataset} dataset")
@@ -350,7 +349,7 @@ def main():
     all_results = {}
     for dataset in datasets:
         try:
-            results = run_dataset_func(config, dataset, args.scoring)
+            results = run_dataset(config, dataset)
             all_results[dataset] = results
         except Exception as e:
             logging.error(f"Failed to run evaluation for {dataset}: {str(e)}")
@@ -358,7 +357,7 @@ def main():
             all_results[dataset] = {"error": str(e)}
     
     # Save summary of all results
-    summary_file = os.path.join(summary_dir, f'{args.scoring.lower()}_summary.json')
+    summary_file = os.path.join(summary_dir, 'aps_summary.json')
     
     # Convert NumPy types to Python native types for JSON serialization
     json_results = {}
@@ -380,7 +379,7 @@ def main():
     logging.info(f"Summary results saved to {summary_file}")
     
     # Print summary table
-    logging.info(f"\n=== {args.scoring} Scoring Function Evaluation Summary ===")
+    logging.info("\n=== APS Scoring Function Evaluation Summary ===")
     logging.info(f"{'Dataset':<10} | {'Coverage':<10} | {'Avg Set Size':<15} | {'Median Set Size':<15}")
     logging.info("-" * 60)
     
