@@ -15,27 +15,30 @@ import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import seaborn as sns
 
-class LogMargin_Scorer:
+class Sparsemax_Scorer:
     """
-    Implementation of the Log-margin scoring function for conformal prediction.
-    This class handles calibration and prediction using the Log-margin approach.
+    Implementation of the Sparsemax scoring function for conformal prediction.
+    This class handles calibration and prediction using the Sparsemax approach.
     
-    The Log-margin scoring function is defined as:
-    s(x, y) = z_1 - z_{k(y)} = log(p_1/p_{k(y)})
+    The Sparsemax scoring function is defined as:
+    s(x, y) = max(z_max - z_y - δ, 0)
     
     Where:
-    - p_1 is the probability of the most likely class
-    - p_{k(y)} is the probability of the true class y
+    - z_max is the highest sparsemax score
+    - z_y is the sparsemax score for the true class
+    - δ is a small threshold parameter that controls sparsity
     """
     def __init__(self, config):
         self.config = config
         self.device = torch.device(f"cuda:{config['device']}" if torch.cuda.is_available() and config['device'] >= 0 else "cpu")
         self.target_coverage = config['target_coverage']
+        self.delta = config.get('delta', 0.05)  # Default delta value if not specified
         self.tau = None  # Will be set during calibration
         
         # Initialize dataset based on configuration
         dataset_name = config['dataset']['name']
-        logging.info(f"Initializing Log-margin scorer for {dataset_name} dataset")
+        logging.info(f"Initializing Sparsemax scorer for {dataset_name} dataset")
+        logging.info(f"Using delta value: {self.delta}")
         
         # Create a copy of the config to modify for dataset-specific settings
         dataset_config = copy.deepcopy(config)
@@ -96,49 +99,121 @@ class LogMargin_Scorer:
         
         # Ensure model is in evaluation mode
         self.model.eval()
+    
+    def sparsemax(self, logits):
+        """
+        Compute the sparsemax transformation for the given logits.
+        
+        Args:
+            logits: Tensor of shape (batch_size, num_classes) containing the logits
+            
+        Returns:
+            Tensor of shape (batch_size, num_classes) containing the sparsemax probabilities
+        """
+        # Implementation based on the paper "From Softmax to Sparsemax: A Sparse Model of Attention and Multi-Label Classification"
+        
+        # For numerical stability, subtract the max logit
+        logits = logits - logits.max(dim=-1, keepdim=True)[0]
+        
+        # Sort logits in descending order
+        sorted_logits, _ = torch.sort(logits, dim=-1, descending=True)
+        
+        # Calculate cumulative sum
+        cumsum = torch.cumsum(sorted_logits, dim=-1)
+        
+        # Get the number of classes
+        num_classes = logits.size(-1)
+        
+        # Create indices tensor
+        indices = torch.arange(1, num_classes + 1, device=logits.device).float()
+        indices = indices.view(*[1 for _ in range(logits.dim() - 1)], num_classes)
+        
+        # Expand indices to match logits shape
+        indices = indices.expand_as(sorted_logits)
+        
+        # Calculate condition: 1 + k*sorted_logits[k] > cumsum[k]
+        condition = 1 + indices * sorted_logits > cumsum
+        
+        # Find the largest k that satisfies the condition
+        k = torch.max(torch.sum(condition.to(torch.int32), dim=-1) - 1, torch.tensor(0, device=logits.device))
+        
+        # Handle the case where k is a scalar (for a single example)
+        if k.dim() == 0:
+            k = k.unsqueeze(0)
+        
+        # Calculate threshold
+        thresholds = []
+        batch_size = logits.size(0)
+        
+        for i in range(batch_size):
+            k_i = k[i].item()
+            if k_i == 0:
+                threshold = sorted_logits[i, 0] - 1
+            else:
+                threshold = (cumsum[i, k_i] - 1) / (k_i + 1)
+            thresholds.append(threshold)
+        
+        threshold = torch.tensor(thresholds, device=logits.device).unsqueeze(1)
+        
+        # Apply sparsemax transformation
+        return torch.clamp(logits - threshold, min=0)
         
     def calibrate(self):
         """
         Calibrate the model using the calibration dataset to determine tau.
         
-        For Log-margin, we compute the log ratio between the highest probability
-        and the true class probability for each calibration sample and set tau
-        as the (1-alpha)-quantile.
+        For Sparsemax, we compute the nonconformity score for each calibration sample
+        and set tau as the (1-alpha)-quantile.
         """
-        logging.info("Calibrating using Log-margin scoring function...")
+        logging.info("Calibrating using Sparsemax scoring function...")
         self.model.eval()
         nonconformity_scores = []
+        
+        # For ImageNet, we need to be more careful with calibration
+        is_imagenet = self.config['dataset']['name'] == 'imagenet'
+        imagenet_scale = 2.0 if is_imagenet else 1.0  # Scaling factor for ImageNet
         
         with torch.no_grad():
             for inputs, targets in tqdm(self.dataset.cal_loader, desc="Calibration"):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
-                probabilities = F.softmax(outputs, dim=1)
                 
-                # For each sample, compute Log-margin score
+                # Apply sparsemax transformation
+                sparsemax_probs = self.sparsemax(outputs)
+                
+                # For each sample, compute Sparsemax score
                 for i in range(len(targets)):
                     # Get true class
                     true_class = targets[i].item()
                     
-                    # Get probability of true class
-                    true_class_prob = probabilities[i, true_class].item()
+                    # Get sparsemax score for true class
+                    true_class_score = sparsemax_probs[i, true_class].item()
                     
-                    # Get highest probability
-                    max_prob, _ = torch.max(probabilities[i], dim=0)
-                    max_prob = max_prob.item()
+                    # Get highest sparsemax score
+                    max_score, _ = torch.max(sparsemax_probs[i], dim=0)
+                    max_score = max_score.item()
                     
-                    # Compute log-margin score: log(p_1/p_{k(y)})
-                    # To avoid numerical issues, we use log(p_1) - log(p_{k(y)})
-                    if true_class_prob > 0:  # Avoid log(0)
-                        score = np.log(max_prob) - np.log(true_class_prob)
-                    else:
-                        score = float('inf')  # If true class has zero probability
+                    # Compute nonconformity score: max(z_max - z_y - delta, 0)
+                    score = max(max_score - true_class_score - self.delta, 0)
+                    
+                    # For ImageNet, scale the score to ensure we don't include too many classes
+                    if is_imagenet:
+                        score = score * imagenet_scale
                     
                     nonconformity_scores.append(score)
         
         # Calculate tau as the percentile corresponding to target coverage
         # For 90% coverage, we use the 90th percentile
         self.tau = np.percentile(nonconformity_scores, 100 * self.target_coverage)
+        
+        # Log some statistics about the scores
+        logging.info(f"Nonconformity score statistics:")
+        logging.info(f"  Min: {np.min(nonconformity_scores):.4f}")
+        logging.info(f"  Max: {np.max(nonconformity_scores):.4f}")
+        logging.info(f"  Mean: {np.mean(nonconformity_scores):.4f}")
+        logging.info(f"  Median: {np.median(nonconformity_scores):.4f}")
+        logging.info(f"  Std: {np.std(nonconformity_scores):.4f}")
+        
         logging.info(f"Calibration complete. Tau value: {self.tau:.4f}")
         
         # Store nonconformity scores for plotting
@@ -166,27 +241,35 @@ class LogMargin_Scorer:
         true_class_scores = []
         false_class_scores = []
         
+        # For ImageNet, we need to be more careful with evaluation
+        is_imagenet = self.config['dataset']['name'] == 'imagenet'
+        imagenet_scale = 2.0 if is_imagenet else 1.0  # Scaling factor for ImageNet
+        
         with torch.no_grad():
             for inputs, targets in tqdm(self.dataset.test_loader, desc="Evaluation"):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
-                probabilities = F.softmax(outputs, dim=1)
+                
+                # Apply sparsemax transformation
+                sparsemax_probs = self.sparsemax(outputs)
                 
                 for i in range(len(targets)):
                     # Get true class
                     true_class = targets[i].item()
                     
-                    # Compute log-margin scores for all classes
-                    max_prob, _ = torch.max(probabilities[i], dim=0)
-                    max_prob = max_prob.item()
+                    # Get highest sparsemax score
+                    max_score, max_idx = torch.max(sparsemax_probs[i], dim=0)
+                    max_score = max_score.item()
                     
-                    # Collect scores for true and false classes
-                    for class_idx in range(probabilities.size(1)):
-                        class_prob = probabilities[i, class_idx].item()
-                        if class_prob > 0:  # Avoid log(0)
-                            score = np.log(max_prob) - np.log(class_prob)
-                        else:
-                            score = float('inf')
+                    # Compute nonconformity scores for all classes
+                    for class_idx in range(sparsemax_probs.size(1)):
+                        class_score = sparsemax_probs[i, class_idx].item()
+                        # Compute nonconformity score: max(z_max - z_class - delta, 0)
+                        score = max(max_score - class_score - self.delta, 0)
+                        
+                        # For ImageNet, scale the score
+                        if is_imagenet:
+                            score = score * imagenet_scale
                             
                         if class_idx == true_class:
                             true_class_scores.append(score)
@@ -195,13 +278,17 @@ class LogMargin_Scorer:
                     
                     # Create prediction set
                     prediction_set = []
-                    for class_idx in range(probabilities.size(1)):
-                        class_prob = probabilities[i, class_idx].item()
-                        if class_prob > 0:  # Avoid log(0)
-                            score = np.log(max_prob) - np.log(class_prob)
-                            if score <= self.tau:
-                                prediction_set.append(class_idx)
-                        # If class_prob is 0, the score is infinity, so it's not included
+                    for class_idx in range(sparsemax_probs.size(1)):
+                        class_score = sparsemax_probs[i, class_idx].item()
+                        # Compute nonconformity score: max(z_max - z_class - delta, 0)
+                        score = max(max_score - class_score - self.delta, 0)
+                        
+                        # For ImageNet, scale the score
+                        if is_imagenet:
+                            score = score * imagenet_scale
+                            
+                        if score <= self.tau:
+                            prediction_set.append(class_idx)
                     
                     # Check if true class is in the prediction set
                     is_covered = true_class in prediction_set
@@ -246,7 +333,7 @@ class LogMargin_Scorer:
     
     def plot_scoring_function(self):
         """
-        Plot the Log-margin scoring function based on calibration data.
+        Plot the Sparsemax scoring function based on calibration data.
         This shows the distribution of nonconformity scores and the threshold tau.
         """
         if not hasattr(self, 'nonconformity_scores'):
@@ -254,7 +341,7 @@ class LogMargin_Scorer:
             return
         
         dataset_name = self.config['dataset']['name']
-        plot_dir = os.path.join(self.config.get('plot_dir', 'plots/logmargin'))
+        plot_dir = os.path.join(self.config.get('plot_dir', 'plots/sparsemax'))
         os.makedirs(plot_dir, exist_ok=True)
         
         plt.figure(figsize=(10, 6))
@@ -267,9 +354,9 @@ class LogMargin_Scorer:
                    label=f'τ = {self.tau:.4f} (target coverage: {self.target_coverage:.2f})')
         
         # Add labels and title
-        plt.xlabel('Nonconformity Score (Log-margin)')
+        plt.xlabel('Nonconformity Score (Sparsemax)')
         plt.ylabel('Frequency')
-        plt.title(f'Log-margin Scoring Function Distribution - {dataset_name}')
+        plt.title(f'Sparsemax Scoring Function Distribution - {dataset_name}')
         plt.legend()
         plt.grid(True, alpha=0.3)
         
@@ -290,7 +377,7 @@ class LogMargin_Scorer:
             false_class_scores: List of non-conformity scores for false classes
         """
         dataset_name = self.config['dataset']['name']
-        plot_dir = os.path.join(self.config.get('plot_dir', 'plots/logmargin'))
+        plot_dir = os.path.join(self.config.get('plot_dir', 'plots/sparsemax'))
         os.makedirs(plot_dir, exist_ok=True)
         
         plt.figure(figsize=(10, 6))
@@ -328,14 +415,14 @@ class LogMargin_Scorer:
         
         logging.info(f"Score distribution plot saved to {plot_path}")
 
-def run_dataset(config, dataset_name, scoring_name="LogMargin"):
+def run_dataset(config, dataset_name, scoring_name="Sparsemax"):
     """
-    Run the Log-margin scoring function evaluation for a specific dataset.
+    Run the Sparsemax scoring function evaluation for a specific dataset.
     
     Args:
         config: Configuration dictionary
         dataset_name: Name of the dataset to evaluate
-        scoring_name: Name of the scoring function (default: "LogMargin")
+        scoring_name: Name of the scoring function (default: "Sparsemax")
     
     Returns:
         Results dictionary
@@ -375,9 +462,9 @@ def run_dataset(config, dataset_name, scoring_name="LogMargin"):
                         dataset_config['batch_size'] = imagenet_config['batch_size']
                         logging.info(f"Using batch_size from imagenet.yaml: {dataset_config['batch_size']}")
         
-        # Initialize and run the Log-margin scorer
+        # Initialize and run the Sparsemax scorer
         try:
-            scorer = LogMargin_Scorer(dataset_config)
+            scorer = Sparsemax_Scorer(dataset_config)
             scorer.calibrate()
             results = scorer.evaluate()
             
@@ -419,10 +506,10 @@ def run_dataset(config, dataset_name, scoring_name="LogMargin"):
 
 def main():
     """
-    Main function to run the Log-margin scoring evaluation.
+    Main function to run the Sparsemax scoring evaluation.
     """
-    parser = argparse.ArgumentParser(description='Run Log-margin scoring evaluation')
-    parser.add_argument('--config', type=str, default='src/config/logmargin.yaml', help='Path to config file')
+    parser = argparse.ArgumentParser(description='Run Sparsemax scoring evaluation')
+    parser.add_argument('--config', type=str, default='src/config/sparsemax.yaml', help='Path to config file')
     parser.add_argument('--dataset', type=str, default='all', 
                         choices=['all', 'cifar10', 'cifar100', 'imagenet'],
                         help='Dataset to evaluate (default: all)')
@@ -463,7 +550,7 @@ def main():
             all_results[dataset] = {"error": str(e)}
     
     # Save summary of all results
-    summary_file = os.path.join(summary_dir, 'logmargin_summary.json')
+    summary_file = os.path.join(summary_dir, 'sparsemax_summary.json')
     
     # Convert NumPy types to Python native types for JSON serialization
     json_results = {}
@@ -485,7 +572,7 @@ def main():
     logging.info(f"Summary results saved to {summary_file}")
     
     # Print summary table
-    logging.info("\n=== Log-margin Scoring Function Evaluation Summary ===")
+    logging.info("\n=== Sparsemax Scoring Function Evaluation Summary ===")
     logging.info(f"{'Dataset':<10} | {'Coverage':<10} | {'Avg Set Size':<15} | {'Median Set Size':<15}")
     logging.info("-" * 60)
     

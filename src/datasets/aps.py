@@ -10,6 +10,10 @@ import yaml
 import json
 import sys
 import traceback
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import seaborn as sns
 
 class APS_Scorer:
     """
@@ -129,6 +133,13 @@ class APS_Scorer:
         # For 90% coverage, we use the 90th percentile
         self.tau = np.percentile(nonconformity_scores, 100 * self.target_coverage)
         logging.info(f"Calibration complete. Tau value: {self.tau:.4f}")
+        
+        # Store nonconformity scores for plotting
+        self.nonconformity_scores = nonconformity_scores
+        
+        # Plot the scoring function
+        self.plot_scoring_function()
+        
         return self.tau
     
     def evaluate(self):
@@ -148,6 +159,10 @@ class APS_Scorer:
         all_max_probs = []
         all_second_probs = []
         empty_set_count = 0
+        
+        # For score distribution plot
+        true_class_scores = []
+        false_class_scores = []
         
         with torch.no_grad():
             for inputs, targets in tqdm(self.dataset.test_loader, desc="Evaluation"):
@@ -184,6 +199,22 @@ class APS_Scorer:
                     covered_samples += int(is_covered)
                     set_sizes.append(len(prediction_set))
                     total_samples += 1
+                    
+                    # Collect non-conformity scores for true and false classes
+                    true_class = targets[i].item()
+                    for j, class_idx in enumerate(sorted_indices.cpu().numpy()):
+                        # For APS, the non-conformity score is the cumulative probability before the class
+                        # For the first class (highest probability), the score is 0
+                        # For other classes, it's the cumulative sum up to but not including that class
+                        if j > 0:
+                            score = cum_probs[j-1].item()
+                        else:
+                            score = 0.0
+                            
+                        if class_idx == true_class:
+                            true_class_scores.append(score)
+                        else:
+                            false_class_scores.append(score)
         
         # Calculate metrics
         empirical_coverage = covered_samples / total_samples
@@ -220,7 +251,94 @@ class APS_Scorer:
         logging.info(f"  Average Set Size: {average_set_size:.4f}")
         logging.info(f"  Median Set Size: {median_set_size:.4f}")
         
+        # Plot score distributions
+        self.plot_score_distributions(true_class_scores, false_class_scores)
+        
         return results
+    
+    def plot_scoring_function(self):
+        """
+        Plot the APS scoring function based on calibration data.
+        This shows the distribution of nonconformity scores and the threshold tau.
+        """
+        if not hasattr(self, 'nonconformity_scores'):
+            logging.warning("No nonconformity scores available. Run calibration first.")
+            return
+        
+        dataset_name = self.config['dataset']['name']
+        plot_dir = os.path.join(self.config.get('plot_dir', 'plots/aps'))
+        os.makedirs(plot_dir, exist_ok=True)
+        
+        plt.figure(figsize=(10, 6))
+        
+        # Plot histogram of nonconformity scores
+        sns.histplot(self.nonconformity_scores, kde=True, bins=50)
+        
+        # Add vertical line for tau
+        plt.axvline(x=self.tau, color='r', linestyle='--', 
+                   label=f'τ = {self.tau:.4f} (target coverage: {self.target_coverage:.2f})')
+        
+        # Add labels and title
+        plt.xlabel('Nonconformity Score (Cumulative Probability)')
+        plt.ylabel('Frequency')
+        plt.title(f'APS Scoring Function Distribution - {dataset_name}')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Save the plot
+        plot_path = os.path.join(plot_dir, f'{dataset_name}_scoring_function.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logging.info(f"Scoring function plot saved to {plot_path}")
+    
+    def plot_score_distributions(self, true_class_scores, false_class_scores):
+        """
+        Plot the distribution of non-conformity scores for true and false classes.
+        This helps visualize how well the scoring function separates correct from incorrect predictions.
+        
+        Args:
+            true_class_scores: List of non-conformity scores for true classes
+            false_class_scores: List of non-conformity scores for false classes
+        """
+        dataset_name = self.config['dataset']['name']
+        plot_dir = os.path.join(self.config.get('plot_dir', 'plots/aps'))
+        os.makedirs(plot_dir, exist_ok=True)
+        
+        plt.figure(figsize=(10, 6))
+        
+        # Set style similar to the provided image
+        plt.style.use('seaborn-v0_8-whitegrid')
+        
+        # Plot distributions with lines instead of filled areas
+        sns.kdeplot(true_class_scores, label='True Class Scores', color='blue')
+        sns.kdeplot(false_class_scores, label='False Class Scores', color='orange')
+        
+        # Add vertical line for tau
+        plt.axvline(x=self.tau, color='red', linestyle='--', 
+                   label='Tau Threshold')
+        
+        # Add labels and title
+        plt.xlabel('Non-Conformity Score')
+        plt.ylabel('Density/Frequency')
+        plt.title('Distribution of Conformity Scores')
+        
+        # Add legend with custom position
+        plt.legend(loc='upper left')
+        
+        # Set axis limits based on data
+        min_score = min(min(true_class_scores) if true_class_scores else 0, 
+                        min(false_class_scores) if false_class_scores else 0)
+        max_score = max(max(true_class_scores) if true_class_scores else 1, 
+                        max(false_class_scores) if false_class_scores else 1)
+        plt.xlim(min_score - 0.2, max_score + 0.2)
+        
+        # Save the plot
+        plot_path = os.path.join(plot_dir, f'{dataset_name}_score_distribution.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logging.info(f"Score distribution plot saved to {plot_path}")
 
 def run_dataset(config, dataset_name, scoring_name="APS"):
     """

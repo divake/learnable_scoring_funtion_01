@@ -10,6 +10,10 @@ import yaml
 import json
 import sys
 import traceback
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import seaborn as sns
 
 class OneMinus_P_Scorer:
     """
@@ -111,6 +115,13 @@ class OneMinus_P_Scorer:
         # For 90% coverage, we use the 90th percentile
         self.tau = np.percentile(nonconformity_scores, 100 * self.target_coverage)
         logging.info(f"Calibration complete. Tau value: {self.tau:.4f}")
+        
+        # Store nonconformity scores for plotting
+        self.nonconformity_scores = nonconformity_scores
+        
+        # Plot the scoring function
+        self.plot_scoring_function()
+        
         return self.tau
     
     def evaluate(self):
@@ -126,10 +137,9 @@ class OneMinus_P_Scorer:
         covered_samples = 0
         set_sizes = []
         
-        # Debug: collect probability distributions
-        all_max_probs = []
-        all_second_probs = []
-        empty_set_count = 0
+        # For score distribution plot
+        true_class_scores = []
+        false_class_scores = []
         
         with torch.no_grad():
             for inputs, targets in tqdm(self.dataset.test_loader, desc="Evaluation"):
@@ -137,28 +147,31 @@ class OneMinus_P_Scorer:
                 outputs = self.model(inputs)
                 probabilities = F.softmax(outputs, dim=1)
                 
-                # Debug: collect top probabilities
-                top_probs, _ = torch.topk(probabilities, k=2, dim=1)
-                all_max_probs.extend(top_probs[:, 0].cpu().numpy())
-                all_second_probs.extend(top_probs[:, 1].cpu().numpy())
-                
                 for i in range(len(targets)):
+                    true_class = targets[i].item()
+                    
+                    # Collect scores for true and false classes
+                    for class_idx in range(probabilities.size(1)):
+                        class_prob = probabilities[i, class_idx].item()
+                        # 1-p scoring function
+                        score = 1 - class_prob
+                        
+                        if class_idx == true_class:
+                            true_class_scores.append(score)
+                        else:
+                            false_class_scores.append(score)
+                    
+                    # Create prediction set
                     prediction_set = []
                     for class_idx in range(probabilities.size(1)):
-                        # 1-p scoring function for each potential class
-                        nonconformity_score = 1 - probabilities[i, class_idx].item()
-                        if nonconformity_score <= self.tau:
+                        class_prob = probabilities[i, class_idx].item()
+                        # 1-p scoring function
+                        score = 1 - class_prob
+                        if score <= self.tau:
                             prediction_set.append(class_idx)
                     
-                    # Check for empty prediction sets
-                    if len(prediction_set) == 0:
-                        empty_set_count += 1
-                        # Ensure at least one prediction (most likely class)
-                        _, top_class = torch.max(probabilities[i], 0)
-                        prediction_set.append(top_class.item())
-                    
                     # Check if true class is in the prediction set
-                    is_covered = targets[i].item() in prediction_set
+                    is_covered = true_class in prediction_set
                     covered_samples += int(is_covered)
                     set_sizes.append(len(prediction_set))
                     total_samples += 1
@@ -168,13 +181,8 @@ class OneMinus_P_Scorer:
         average_set_size = np.mean(set_sizes)
         median_set_size = np.median(set_sizes)
         
-        # Debug: print probability statistics
-        logging.info(f"Debug - Average max probability: {np.mean(all_max_probs):.4f}")
-        logging.info(f"Debug - Average second highest probability: {np.mean(all_second_probs):.4f}")
-        
         # Debug: print set size distribution
         set_size_counts = np.bincount(set_sizes)
-        logging.info(f"Debug - Empty prediction sets (before correction): {empty_set_count}")
         logging.info(f"Debug - Set size distribution:")
         for size, count in enumerate(set_size_counts):
             if count > 0:
@@ -198,7 +206,94 @@ class OneMinus_P_Scorer:
         logging.info(f"  Average Set Size: {average_set_size:.4f}")
         logging.info(f"  Median Set Size: {median_set_size:.4f}")
         
+        # Plot score distributions
+        self.plot_score_distributions(true_class_scores, false_class_scores)
+        
         return results
+    
+    def plot_scoring_function(self):
+        """
+        Plot the 1-p scoring function based on calibration data.
+        This shows the distribution of nonconformity scores and the threshold tau.
+        """
+        if not hasattr(self, 'nonconformity_scores'):
+            logging.warning("No nonconformity scores available. Run calibration first.")
+            return
+        
+        dataset_name = self.config['dataset']['name']
+        plot_dir = os.path.join(self.config.get('plot_dir', 'plots/1-p'))
+        os.makedirs(plot_dir, exist_ok=True)
+        
+        plt.figure(figsize=(10, 6))
+        
+        # Plot histogram of nonconformity scores
+        sns.histplot(self.nonconformity_scores, kde=True, bins=50)
+        
+        # Add vertical line for tau
+        plt.axvline(x=self.tau, color='r', linestyle='--', 
+                   label=f'τ = {self.tau:.4f} (target coverage: {self.target_coverage:.2f})')
+        
+        # Add labels and title
+        plt.xlabel('Nonconformity Score (1-p)')
+        plt.ylabel('Frequency')
+        plt.title(f'1-p Scoring Function Distribution - {dataset_name}')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Save the plot
+        plot_path = os.path.join(plot_dir, f'{dataset_name}_scoring_function.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logging.info(f"Scoring function plot saved to {plot_path}")
+    
+    def plot_score_distributions(self, true_class_scores, false_class_scores):
+        """
+        Plot the distribution of non-conformity scores for true and false classes.
+        This helps visualize how well the scoring function separates correct from incorrect predictions.
+        
+        Args:
+            true_class_scores: List of non-conformity scores for true classes
+            false_class_scores: List of non-conformity scores for false classes
+        """
+        dataset_name = self.config['dataset']['name']
+        plot_dir = os.path.join(self.config.get('plot_dir', 'plots/1-p'))
+        os.makedirs(plot_dir, exist_ok=True)
+        
+        plt.figure(figsize=(10, 6))
+        
+        # Set style similar to the provided image
+        plt.style.use('seaborn-v0_8-whitegrid')
+        
+        # Plot distributions with lines instead of filled areas
+        sns.kdeplot(true_class_scores, label='True Class Scores', color='blue')
+        sns.kdeplot(false_class_scores, label='False Class Scores', color='orange')
+        
+        # Add vertical line for tau
+        plt.axvline(x=self.tau, color='red', linestyle='--', 
+                   label='Tau Threshold')
+        
+        # Add labels and title
+        plt.xlabel('Non-Conformity Score')
+        plt.ylabel('Density/Frequency')
+        plt.title('Distribution of Conformity Scores')
+        
+        # Add legend with custom position
+        plt.legend(loc='upper left')
+        
+        # Set axis limits based on data
+        min_score = min(min(true_class_scores) if true_class_scores else 0, 
+                        min(false_class_scores) if false_class_scores else 0)
+        max_score = max(max(true_class_scores) if true_class_scores else 1, 
+                        max(false_class_scores) if false_class_scores else 1)
+        plt.xlim(min_score - 0.2, max_score + 0.2)
+        
+        # Save the plot
+        plot_path = os.path.join(plot_dir, f'{dataset_name}_score_distribution.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logging.info(f"Score distribution plot saved to {plot_path}")
 
 def run_dataset(config, dataset_name, scoring_name="1-p"):
     """
