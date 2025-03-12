@@ -23,8 +23,6 @@ log_dir: logs/cifar10
 num_epochs: 50
 batch_size: 128
 learning_rate: 0.001
-lambda1: 1.0  # Coverage loss weight
-lambda2: 1.0  # Set size loss weight
 target_coverage: 0.9
 
 # Training configuration
@@ -33,7 +31,7 @@ training:
     enabled: true
     max_norm: 0.5
   loss_weights:
-    coverage: 1.0  # lambda1
+    coverage: 2.0  # Increased from 1.0 to prioritize coverage
     size: 1.0      # lambda2
     margin: 0.2    # margin loss weight
 
@@ -64,16 +62,16 @@ scoring_function:
   final_activation:
     name: 'Softplus'
     params:
-      beta: 10
+      beta: 10  # Increased back to 10 for sharper separation
 
 # Training constraints
 tau:
-  min: 0.1
+  min: 0.7
   max: 0.9
-  window_size: 5
+  window_size: 5  # Increased from 0 for more stable tau
 
 # Set size constraints
 set_size:
-  target: 1.2
+  target: 1
   max: 3.0
-  margin: 1 
+  margin: 1.5

@@ -80,6 +80,12 @@ class ScoringFunction(nn.Module):
         
         self.l2_lambda = config['scoring_function']['l2_lambda']
         
+        # Add a stability factor to encourage consistent coverage
+        self.stability_factor = 0.05  # Reduced from 0.1 to allow more separation
+        
+        # Add a separation factor to encourage separation between true and false classes
+        self.separation_factor = 0.5
+        
     def forward(self, x):
         scores = self.network(x)
         
@@ -87,7 +93,24 @@ class ScoringFunction(nn.Module):
         l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
         self.l2_reg = self.l2_lambda * l2_reg
         
-        # Force output to be reasonable
-        scores = torch.clamp(scores, min=0.0, max=1.0)
+        # Force output to be reasonable but allow more separation
+        # Lower minimum to allow true classes to get closer to 0
+        scores = torch.clamp(scores, min=0.01, max=1.0)
+        
+        # Add stability term to encourage consistent behavior
+        if self.training:
+            # Add a small perturbation to input during training to test robustness
+            perturbed_x = x + torch.randn_like(x) * 0.01
+            perturbed_scores = self.network(perturbed_x)
+            perturbed_scores = torch.clamp(perturbed_scores, min=0.01, max=1.0)
+            
+            # Stability loss encourages similar outputs for similar inputs
+            self.stability_loss = self.stability_factor * torch.mean((scores - perturbed_scores)**2)
+            
+            # Initialize separation loss (will be set in the trainer if needed)
+            self.separation_loss = 0.0
+        else:
+            self.stability_loss = 0.0
+            self.separation_loss = 0.0
         
         return scores

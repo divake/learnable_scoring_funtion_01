@@ -41,12 +41,22 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
     sorted_scores, _ = torch.sort(all_scores)
     
     # Compute index for the desired quantile
-    idx = int(coverage_target * len(sorted_scores))
+    # Use ceiling instead of floor to ensure we meet or exceed target coverage
+    idx = int(np.ceil(coverage_target * len(sorted_scores))) - 1
+    idx = max(0, min(idx, len(sorted_scores) - 1))  # Safety bounds check
     
-    # Apply smoothing around the quantile
-    start_idx = max(0, idx - tau_config['window_size'])
-    end_idx = min(len(sorted_scores), idx + tau_config['window_size'])
-    tau = sorted_scores[start_idx:end_idx].mean().item()
+    # Apply smoothing around the quantile with more emphasis on lower values
+    # to ensure we maintain coverage
+    window_size = tau_config['window_size']
+    if window_size > 0:
+        start_idx = max(0, idx - window_size)
+        end_idx = min(len(sorted_scores) - 1, idx + window_size // 2)  # Asymmetric window
+        window_scores = sorted_scores[start_idx:end_idx+1]
+        # Weight lower scores more to ensure coverage
+        weights = torch.linspace(1.5, 1.0, len(window_scores))
+        tau = (window_scores * weights).sum() / weights.sum()
+    else:
+        tau = sorted_scores[idx].item()
     
     # Clamp tau to reasonable range
     tau = max(tau_config['min'], min(tau_config['max'], tau))

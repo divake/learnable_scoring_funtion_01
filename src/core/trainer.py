@@ -193,6 +193,7 @@ class ScoringFunctionTrainer:
         flat_probs = probs.reshape(-1, 1)  # Reshape to (batch_size * num_classes, 1)
         
         # Process all probabilities in a single forward pass
+        # When in eval mode, this won't compute stability_loss
         flat_scores = self.scoring_fn(flat_probs)
         
         # Reshape back to original dimensions
@@ -210,8 +211,11 @@ class ScoringFunctionTrainer:
         coverage_meter = AverageMeter()
         size_meter = AverageMeter()
         
-        # Clamp tau to reasonable range
+        # Ensure tau is within reasonable bounds
         tau = max(tau_config['min'], min(tau_config['max'], tau))
+        
+        # Get target coverage from config
+        target_coverage = self.config['target_coverage']
         
         pbar = tqdm(self.train_loader, desc='Training')
         for inputs, targets in pbar:
@@ -244,12 +248,50 @@ class ScoringFunctionTrainer:
             size_deviation = torch.abs(avg_size - set_size_config['target'])
             size_penalty = size_deviation ** 2
             
-            # Combined loss
+            # Add separation loss to encourage true scores near 0 and false scores near 1
+            # This helps create the desired separation in the score distributions
+            if hasattr(self.scoring_fn, 'separation_factor'):
+                # Push true scores toward 0
+                true_score_loss = torch.mean(target_scores ** 2)
+                
+                # Push false scores toward 1
+                false_score_loss = torch.mean((1.0 - false_scores) ** 2)
+                
+                # Combined separation loss
+                separation_loss = true_score_loss + false_score_loss
+                self.scoring_fn.separation_loss = self.scoring_fn.separation_factor * separation_loss
+            else:
+                separation_loss = 0.0
+            
+            # Dynamically adjust coverage weight if below target
+            coverage_boost = 1.0
+            size_boost = 1.0
+            
+            # If coverage is good (close to target), boost size weight
+            if abs(coverage.item() - target_coverage) < 0.01:  # Within 1% of target
+                size_boost = 1.5  # Boost size weight moderately
+            # If coverage is too low, prioritize coverage
+            elif coverage.item() < target_coverage - 0.02:  # If more than 2% below target
+                coverage_boost = 2.0  # Boost coverage weight
+            
+            # Combined loss with dynamic weights
             loss = (
-                self.lambda1 * coverage_loss +
-                self.lambda2 * size_penalty +
+                self.lambda1 * coverage_boost * coverage_loss +
+                self.lambda2 * size_boost * size_penalty +
                 self.margin_weight * margin_loss
             )
+            
+            # Add stability loss if available
+            if hasattr(self.scoring_fn, 'stability_loss'):
+                loss = loss + self.scoring_fn.stability_loss
+            
+            # Add separation loss if available
+            if hasattr(self.scoring_fn, 'separation_loss'):
+                loss = loss + self.scoring_fn.separation_loss
+            
+            # Add L2 regularization if available
+            if hasattr(self.scoring_fn, 'l2_reg'):
+                loss = loss + self.scoring_fn.l2_reg
             
             optimizer.zero_grad()
             loss.backward()
@@ -282,18 +324,26 @@ class ScoringFunctionTrainer:
         coverage_meter = AverageMeter()
         size_meter = AverageMeter()
         
+        # Ensure tau is within reasonable bounds
+        tau_config = self.config['tau']
+        tau = max(tau_config['min'], min(tau_config['max'], tau))
+        
         with torch.no_grad():
             for inputs, targets in loader:
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
                 
                 scores, target_scores, _ = self._compute_scores(inputs, targets)
+                
+                # Compute coverage (true class scores <= tau)
                 coverage = (target_scores <= tau).float().mean()
                 
+                # Compute prediction sets and sizes
                 pred_sets = scores <= tau
                 set_sizes = pred_sets.float().sum(dim=1)
                 avg_size = set_sizes.mean()
                 
+                # Update metrics
                 coverage_meter.update(coverage.item())
                 size_meter.update(avg_size.item())
         
@@ -305,6 +355,10 @@ class ScoringFunctionTrainer:
         true_scores = []
         false_scores = []
         set_sizes = []
+        
+        # Ensure tau is within reasonable bounds
+        tau_config = self.config['tau']
+        tau = max(tau_config['min'], min(tau_config['max'], tau))
         
         self.scoring_fn.eval()
         with torch.no_grad():
