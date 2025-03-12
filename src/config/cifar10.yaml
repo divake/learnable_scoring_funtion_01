@@ -20,7 +20,7 @@ plot_dir: plots/cifar10
 log_dir: logs/cifar10
 
 # Training parameters
-num_epochs: 50
+num_epochs: 30
 batch_size: 128
 learning_rate: 0.001
 target_coverage: 0.9
@@ -66,7 +66,7 @@ scoring_function:
 
 # Training constraints
 tau:
-  min: 0.7
+  min: 0.1
   max: 0.9
   window_size: 5  # Increased from 0 for more stable tau
 
@@ -74,4 +74,4 @@ tau:
 set_size:
   target: 1
   max: 3.0
-  margin: 1.5
+  margin: 2
