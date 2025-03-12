@@ -359,6 +359,7 @@ def plot_roc_curve(y_true: np.ndarray, y_scores: np.ndarray,
     
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
     
     return ax
 
@@ -422,6 +423,7 @@ def plot_auarc_curve(error_rates: List[float], set_sizes: List[float],
     
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
     
     return ax
 
@@ -527,6 +529,7 @@ def plot_reliability_diagram(y_true: np.ndarray, y_probs: np.ndarray,
     
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
     
     return ax
 
@@ -582,6 +585,7 @@ def plot_conformal_calibration(confidence_levels: np.ndarray, actual_coverages: 
     
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
     
     return ax
 
@@ -663,6 +667,7 @@ def plot_metrics_over_epochs(epochs: List[int],
     
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
     
     return fig
 

@@ -7,6 +7,7 @@ from tqdm import tqdm
 import logging
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 
 from src.utils.visualization import (
     plot_training_curves, 
@@ -221,8 +222,29 @@ class ScoringFunctionTrainer:
         )
         logging.info(f"Saved metrics to {metrics_file}")
         
-        # Plot final AUROC, AUARC, and ECE curves
-        self._plot_final_metrics(history, plot_dir)
+        # Create a summary analysis
+        from .advanced_metrics import analyze_epoch_metrics
+        analysis = analyze_epoch_metrics(
+            epochs=history['epochs'],
+            auroc_values=history['auroc_values'],
+            auarc_values=history['auarc_values'],
+            ece_values=history['ece_values'],
+            coverage_values=history['val_coverages'],
+            size_values=history['val_sizes']
+        )
+        
+        # Log analysis results
+        logging.info("\nMetrics Analysis:")
+        logging.info(f"Best AUROC: {analysis['best_auroc']['value']:.4f} at epoch {analysis['best_auroc']['epoch']}")
+        logging.info(f"Best AUARC: {analysis['best_auarc']['value']:.4f} at epoch {analysis['best_auarc']['epoch']}")
+        if 'best_ece' in analysis:
+            logging.info(f"Best ECE: {analysis['best_ece']['value']:.4f} at epoch {analysis['best_ece']['epoch']}")
+        
+        if 'best_trade_off' in analysis:
+            logging.info(f"Best trade-off at epoch {analysis['best_trade_off']['epoch']}:")
+            logging.info(f"  Coverage: {analysis['best_trade_off']['coverage']:.4f}")
+            logging.info(f"  Set Size: {analysis['best_trade_off']['size']:.4f}")
+            logging.info(f"  Efficiency: {analysis['best_trade_off']['trade_off']:.4f}")
         
         logging.info("Training completed!")
     
@@ -466,7 +488,7 @@ class ScoringFunctionTrainer:
                 pred_sets = (scores <= tau).sum(dim=1)
                 set_sizes.extend(pred_sets.cpu().numpy())
         
-        # Update plots
+        # Update plots and close figures after saving
         plot_training_curves(
             epochs=history['epochs'],
             train_losses=history['train_losses'],
@@ -477,6 +499,7 @@ class ScoringFunctionTrainer:
             tau_values=history['tau_values'],
             save_dir=plot_dir
         )
+        plt.close()
         
         plot_score_distributions(
             true_scores=true_scores,
@@ -484,21 +507,25 @@ class ScoringFunctionTrainer:
             tau=tau,
             save_dir=plot_dir
         )
+        plt.close()
         
         plot_set_size_distribution(
             set_sizes=set_sizes,
             save_dir=plot_dir
         )
+        plt.close()
         
         plot_scoring_function_behavior(
             self.scoring_fn,
             self.device,
             plot_dir
         )
+        plt.close()
         
         # Plot AUROC, AUARC, and ECE metrics if available
         if 'auroc_values' in history and len(history['auroc_values']) > 0:
             self._plot_advanced_metrics(history, plot_dir)
+            plt.close()
     
     def _plot_advanced_metrics(self, history, plot_dir):
         """Plot AUROC, AUARC, and ECE metrics over epochs"""
@@ -514,41 +541,3 @@ class ScoringFunctionTrainer:
             title=f"AUROC, AUARC, and ECE Metrics for {self.config['dataset']['name']}",
             save_path=os.path.join(plot_dir, 'auroc_auarc_metrics.png')
         )
-    
-    def _plot_final_metrics(self, history, plot_dir):
-        """Plot final AUROC, AUARC, and ECE metrics with analysis"""
-        if len(history['epochs']) < 2:
-            return  # Need at least 2 epochs for analysis
-            
-        # Plot metrics over epochs
-        plot_metrics_over_epochs(
-            epochs=history['epochs'],
-            auroc_values=history['auroc_values'],
-            auarc_values=history['auarc_values'],
-            ece_values=history['ece_values'],
-            model_names=[self.config['dataset']['name']],
-            title=f"Final AUROC, AUARC, and ECE Metrics for {self.config['dataset']['name']}",
-            save_path=os.path.join(plot_dir, 'final_auroc_auarc_metrics.png')
-        )
-        
-        # Create a summary plot with best epoch highlighted
-        from .advanced_metrics import analyze_epoch_metrics
-        analysis = analyze_epoch_metrics(
-            epochs=history['epochs'],
-            auroc_values=history['auroc_values'],
-            auarc_values=history['auarc_values'],
-            ece_values=history['ece_values'],
-            coverage_values=history['val_coverages'],
-            size_values=history['val_sizes']
-        )
-        
-        # Log analysis results
-        logging.info("\nMetrics Analysis:")
-        logging.info(f"Best AUROC: {analysis['best_auroc']['value']:.4f} at epoch {analysis['best_auroc']['epoch']}")
-        logging.info(f"Best AUARC: {analysis['best_auarc']['value']:.4f} at epoch {analysis['best_auarc']['epoch']}")
-        
-        if 'best_trade_off' in analysis:
-            logging.info(f"Best trade-off at epoch {analysis['best_trade_off']['epoch']}:")
-            logging.info(f"  Coverage: {analysis['best_trade_off']['coverage']:.4f}")
-            logging.info(f"  Set Size: {analysis['best_trade_off']['size']:.4f}")
-            logging.info(f"  Efficiency: {analysis['best_trade_off']['trade_off']:.4f}")
