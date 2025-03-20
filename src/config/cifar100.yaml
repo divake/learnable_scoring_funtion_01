@@ -33,9 +33,9 @@ training:
     enabled: true
     max_norm: 0.5
   loss_weights:
-    coverage: 1.0  # lambda1
+    coverage: 2.0  # lambda1
     size: 1.0      # lambda2
-    margin: 0.2    # margin loss weight
+    margin: 2    # margin loss weight
 
 # Optimizer configuration
 optimizer:
@@ -74,6 +74,6 @@ tau:
 
 # Set size constraints
 set_size:
-  target: 1.2
-  max: 5.0
-  margin: 1
+  target: 1
+  max: 3
+  margin: 5
