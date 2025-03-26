@@ -2,7 +2,7 @@
 inherit: base_config.yaml
 
 # Device configuration
-device: 0  # Use first GPU (cuda:0)
+device: 1  # GPU=0/1 and CPU=-1
 
 # Directory paths
 data_dir: data  # Directory where datasets are stored

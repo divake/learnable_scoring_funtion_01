@@ -106,7 +106,8 @@ class Dataset(BaseDataset):
         model.load_state_dict(
             torch.load(
                 os.path.join(self.config['base_dir'], self.config['model']['pretrained_path']),
-                weights_only=True
+                map_location=self.config['device'],
+                weights_only=False  # Disable weights_only to fix CUDA error
             )
         )
         
