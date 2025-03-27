@@ -312,11 +312,11 @@ def plot_roc_curve(y_true: np.ndarray, y_scores: np.ndarray,
                   title: str = "ROC Curve",
                   save_path: Optional[str] = None) -> plt.Axes:
     """
-    Plot the ROC curve for one or more models.
+    Plot the ROC curve for one or more models, supporting both binary and multi-class classification.
     
     Args:
-        y_true: Ground truth binary labels
-        y_scores: List of score arrays for each model
+        y_true: Ground truth labels
+        y_scores: Score arrays for each model. For multi-class, this should be of shape (n_samples, n_classes)
         model_names: Names of the models for the legend
         ax: Matplotlib axes to plot on
         title: Plot title
@@ -328,27 +328,61 @@ def plot_roc_curve(y_true: np.ndarray, y_scores: np.ndarray,
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 6))
     
-    # Handle single model case
-    if not isinstance(y_scores[0], (list, np.ndarray, torch.Tensor)) or len(y_scores[0]) == 1:
-        y_scores = [y_scores]
-        
-    if model_names is None:
-        model_names = [f"Model {i+1}" for i in range(len(y_scores))]
+    # Convert tensors to numpy arrays
+    if isinstance(y_true, torch.Tensor):
+        y_true = y_true.cpu().numpy()
+    if isinstance(y_scores, torch.Tensor):
+        y_scores = y_scores.cpu().numpy()
     
-    for i, scores in enumerate(y_scores):
-        if isinstance(scores, torch.Tensor):
-            scores = scores.cpu().numpy()
-        if isinstance(y_true, torch.Tensor):
-            y_true_np = y_true.cpu().numpy()
-        else:
-            y_true_np = y_true
-            
-        fpr, tpr, _ = roc_curve(y_true_np, scores)
+    # Determine if we're dealing with multi-class classification
+    multi_class = len(y_scores.shape) > 1 and y_scores.shape[1] > 2
+    
+    if multi_class:
+        # Multi-class classification
+        # Binarize the labels for multi-class ROC curve
+        classes = np.unique(y_true)
+        y_true_bin = label_binarize(y_true, classes=classes)
+        
+        # Compute ROC curve and ROC area for each class
+        fpr = {}
+        tpr = {}
+        roc_auc = {}
+        
+        for i in range(len(classes)):
+            fpr[i], tpr[i], _ = roc_curve(y_true_bin[:, i], y_scores[:, i])
+            roc_auc[i] = auc(fpr[i], tpr[i])
+        
+        # Compute micro-average ROC curve and ROC area
+        fpr["micro"], tpr["micro"], _ = roc_curve(y_true_bin.ravel(), y_scores.ravel())
+        roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
+        
+        # Plot micro-average ROC curve
+        ax.plot(fpr["micro"], tpr["micro"], label=f'micro-average (AUC = {roc_auc["micro"]:.3f})',
+                color='deeppink', linestyle=':', linewidth=2)
+        
+        # Plot ROC curves for first few classes (limited to 5 for readability)
+        n_classes_to_plot = min(5, len(classes))
+        colors = plt.cm.get_cmap('tab10', n_classes_to_plot)
+        
+        for i in range(n_classes_to_plot):
+            ax.plot(fpr[i], tpr[i], color=colors(i),
+                    lw=2, label=f'Class {classes[i]} (AUC = {roc_auc[i]:.3f})')
+    else:
+        # Binary classification
+        # If scores has two columns, use the second column (probability of positive class)
+        if len(y_scores.shape) > 1 and y_scores.shape[1] == 2:
+            y_scores = y_scores[:, 1]
+        
+        fpr, tpr, _ = roc_curve(y_true, y_scores)
         roc_auc = auc(fpr, tpr)
         
-        ax.plot(fpr, tpr, lw=2, label=f'{model_names[i]} (AUROC = {roc_auc:.3f})')
+        model_label = model_names[0] if model_names else "Model"
+        ax.plot(fpr, tpr, lw=2, label=f'{model_label} (AUC = {roc_auc:.3f})')
     
-    ax.plot([0, 1], [0, 1], 'k--', lw=2)
+    # Add diagonal line for reference
+    ax.plot([0, 1], [0, 1], 'k--', lw=1)
+    
+    # Add styling
     ax.set_xlim([0.0, 1.0])
     ax.set_ylim([0.0, 1.05])
     ax.set_xlabel('False Positive Rate')

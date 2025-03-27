@@ -29,6 +29,9 @@ import glob
 from typing import Dict, List, Tuple, Any, Optional, Union
 import pandas as pd
 import concurrent.futures
+from sklearn.metrics import roc_curve, auc, roc_auc_score
+from sklearn.preprocessing import label_binarize
+from src.core.advanced_metrics import calculate_auroc, plot_roc_curve
 
 # ==================== Registry System ====================
 
@@ -373,82 +376,6 @@ class BaseScorer(ABC):
         
         return self.tau
     
-    def evaluate(self) -> Dict[str, Any]:
-        """
-        Evaluate the model on the test set and compute metrics.
-        
-        Returns:
-            Dictionary containing evaluation metrics
-        """
-        if self.tau is None:
-            logging.warning("Tau not calibrated. Running calibration first.")
-            self.calibrate()
-        
-        self.model.eval()
-        total_samples = 0
-        covered_samples = 0
-        set_sizes = []
-        
-        # For score distribution plot
-        true_class_scores = []
-        false_class_scores = []
-        
-        with torch.no_grad():
-            for inputs, targets in tqdm(self.dataset.test_loader, desc="Evaluation"):
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-                outputs = self.model(inputs)
-                
-                # Create prediction sets and collect metrics
-                prediction_sets, batch_true_scores, batch_false_scores = self.create_prediction_sets(outputs, targets)
-                
-                # Update metrics
-                for i, pred_set in enumerate(prediction_sets):
-                    true_class = targets[i].item()
-                    is_covered = true_class in pred_set
-                    covered_samples += int(is_covered)
-                    set_sizes.append(len(pred_set))
-                    total_samples += 1
-                
-                # Collect scores for distribution plots
-                true_class_scores.extend(batch_true_scores)
-                false_class_scores.extend(batch_false_scores)
-        
-        # Calculate metrics
-        empirical_coverage = covered_samples / total_samples
-        average_set_size = np.mean(set_sizes)
-        median_set_size = np.median(set_sizes)
-        
-        # Debug: print set size distribution
-        set_size_counts = np.bincount(set_sizes)
-        logging.info(f"Set size distribution:")
-        for size, count in enumerate(set_size_counts):
-            if count > 0:
-                logging.info(f"  Size {size}: {count} samples ({count/total_samples*100:.2f}%)")
-        
-        results = {
-            "dataset": self.config['dataset']['name'],
-            "scoring_function": self.__class__.__name__,
-            "tau": self.tau,
-            "target_coverage": self.target_coverage,
-            "empirical_coverage": empirical_coverage,
-            "average_set_size": average_set_size,
-            "median_set_size": median_set_size,
-            "set_size_std": np.std(set_sizes),
-            "set_size_min": np.min(set_sizes),
-            "set_size_max": np.max(set_sizes),
-        }
-        
-        logging.info(f"Evaluation Results for {self.config['dataset']['name']} with {self.__class__.__name__}:")
-        logging.info(f"  Target Coverage: {self.target_coverage:.4f}")
-        logging.info(f"  Empirical Coverage: {empirical_coverage:.4f}")
-        logging.info(f"  Average Set Size: {average_set_size:.4f}")
-        logging.info(f"  Median Set Size: {median_set_size:.4f}")
-        
-        # Plot score distributions
-        self.plot_score_distributions(true_class_scores, false_class_scores)
-        
-        return results
-    
     def plot_scoring_function(self) -> None:
         """
         Plot the scoring function based on calibration data.
@@ -513,7 +440,7 @@ class BaseScorer(ABC):
         plt.title('Distribution of Conformity Scores')
         
         # Add legend with custom position
-        plt.legend(loc='upper left')
+        plt.legend(loc="upper left")
         
         # Set axis limits based on data
         min_score = min(min(true_class_scores) if true_class_scores else 0, 
@@ -527,7 +454,129 @@ class BaseScorer(ABC):
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        logging.info(f"Score distribution plot saved to {plot_path}") 
+        logging.info(f"Score distribution plot saved to {plot_path}")
+    
+    def plot_roc_curve(self, y_true: np.ndarray, y_scores: np.ndarray) -> None:
+        """
+        Plot the ROC curve for the model using the imported function.
+        
+        Args:
+            y_true: Ground truth labels
+            y_scores: Predicted probabilities
+        """
+        dataset_name = self.config['dataset']['name']
+        
+        try:
+            # Create the plot
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Use the imported function that now handles multi-class data properly
+            plot_roc_curve(y_true, y_scores, title=f'Receiver Operating Characteristic - {dataset_name}', ax=ax)
+            
+            # Save the plot
+            plot_path = os.path.join(self.plot_dir, f'{dataset_name}_roc_curve.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            logging.info(f"ROC curve plot saved to {plot_path}")
+        except Exception as e:
+            logging.warning(f"Could not plot ROC curve: {str(e)}")
+            logging.warning("This is non-critical and the evaluation will continue.")
+    
+    def evaluate(self) -> Dict[str, Any]:
+        """
+        Evaluate the model on the test set and compute metrics.
+        
+        Returns:
+            Dictionary containing evaluation metrics
+        """
+        if self.tau is None:
+            logging.warning("Tau not calibrated. Running calibration first.")
+            self.calibrate()
+        
+        self.model.eval()
+        total_samples = 0
+        covered_samples = 0
+        set_sizes = []
+        
+        # For score distribution plot
+        true_class_scores = []
+        false_class_scores = []
+        
+        # For AUROC calculation
+        all_true_labels = []
+        all_probabilities = []
+        
+        with torch.no_grad():
+            for inputs, targets in tqdm(self.dataset.test_loader, desc="Evaluation"):
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
+                outputs = self.model(inputs)
+                probabilities = F.softmax(outputs, dim=1)
+                
+                # Store true labels and probabilities for AUROC calculation
+                all_true_labels.extend(targets.cpu().numpy())
+                all_probabilities.append(probabilities.cpu().numpy())
+                
+                # Create prediction sets and collect metrics
+                prediction_sets, batch_true_scores, batch_false_scores = self.create_prediction_sets(outputs, targets)
+                
+                # Update metrics
+                for i, pred_set in enumerate(prediction_sets):
+                    true_class = targets[i].item()
+                    is_covered = true_class in pred_set
+                    covered_samples += int(is_covered)
+                    set_sizes.append(len(pred_set))
+                    total_samples += 1
+                
+                # Collect scores for distribution plots
+                true_class_scores.extend(batch_true_scores)
+                false_class_scores.extend(batch_false_scores)
+        
+        # Calculate metrics
+        empirical_coverage = covered_samples / total_samples
+        average_set_size = np.mean(set_sizes)
+        median_set_size = np.median(set_sizes)
+        
+        # Calculate AUROC
+        all_true_labels = np.array(all_true_labels)
+        all_probabilities = np.vstack(all_probabilities)
+        auroc = calculate_auroc(all_true_labels, all_probabilities)
+        
+        # Debug: print set size distribution
+        set_size_counts = np.bincount(set_sizes)
+        logging.info(f"Set size distribution:")
+        for size, count in enumerate(set_size_counts):
+            if count > 0:
+                logging.info(f"  Size {size}: {count} samples ({count/total_samples*100:.2f}%)")
+        
+        results = {
+            "dataset": self.config['dataset']['name'],
+            "scoring_function": self.__class__.__name__,
+            "tau": self.tau,
+            "target_coverage": self.target_coverage,
+            "empirical_coverage": empirical_coverage,
+            "average_set_size": average_set_size,
+            "median_set_size": median_set_size,
+            "set_size_std": np.std(set_sizes),
+            "set_size_min": np.min(set_sizes),
+            "set_size_max": np.max(set_sizes),
+            "auroc": auroc,
+        }
+        
+        logging.info(f"Evaluation Results for {self.config['dataset']['name']} with {self.__class__.__name__}:")
+        logging.info(f"  Target Coverage: {self.target_coverage:.4f}")
+        logging.info(f"  Empirical Coverage: {empirical_coverage:.4f}")
+        logging.info(f"  Average Set Size: {average_set_size:.4f}")
+        logging.info(f"  Median Set Size: {median_set_size:.4f}")
+        logging.info(f"  AUROC: {auroc:.4f}")
+        
+        # Plot score distributions
+        self.plot_score_distributions(true_class_scores, false_class_scores)
+        
+        # Plot ROC curve
+        self.plot_roc_curve(all_true_labels, all_probabilities)
+        
+        return results
 
 # ==================== Scoring Function Implementations ====================
 
@@ -982,7 +1031,8 @@ def create_comparison_report(results: Dict[str, Dict[str, Dict[str, Any]]], outp
                     'Average Set Size': metrics.get('average_set_size', 'N/A'),
                     'Median Set Size': metrics.get('median_set_size', 'N/A'),
                     'Min Set Size': metrics.get('set_size_min', 'N/A'),
-                    'Max Set Size': metrics.get('set_size_max', 'N/A')
+                    'Max Set Size': metrics.get('set_size_max', 'N/A'),
+                    'AUROC': metrics.get('auroc', 'N/A')
                 })
     
     if not rows:
@@ -1020,6 +1070,19 @@ def create_comparison_report(results: Dict[str, Dict[str, Dict[str, Any]]], outp
     plt.savefig(coverage_path, dpi=300, bbox_inches='tight')
     plt.close()
     plots['empirical_coverage'] = coverage_path
+    
+    # AUROC comparison
+    plt.figure(figsize=(12, 8))
+    ax = sns.barplot(x='Dataset', y='AUROC', hue='Scorer', data=df)
+    for container in ax.containers:
+        ax.bar_label(container, fmt='%.3f')
+    plt.title('AUROC Comparison (Higher is Better)')
+    plt.legend(title='Scoring Function', bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    auroc_path = os.path.join(output_dir, 'auroc_comparison.png')
+    plt.savefig(auroc_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    plots['auroc'] = auroc_path
     
     # Save summary as CSV
     summary_path = os.path.join(output_dir, 'metrics_summary.csv')
@@ -1273,8 +1336,8 @@ def main():
     
     # Print summary table
     logging.info(f"\n=== Conformal Prediction Evaluation Summary ===")
-    logging.info(f"{'Dataset':<10} | {'Scorer':<10} | {'Coverage':<10} | {'Avg Set Size':<15} | {'Status':<10}")
-    logging.info("-" * 65)
+    logging.info(f"{'Dataset':<10} | {'Scorer':<10} | {'Coverage':<10} | {'Avg Set Size':<15} | {'AUROC':<10} | {'Status':<10}")
+    logging.info("-" * 75)
     
     for dataset in datasets:
         for scoring in scoring_functions:
@@ -1284,17 +1347,21 @@ def main():
                 status = "ERROR"
                 coverage = "N/A"
                 avg_size = "N/A"
+                auroc = "N/A"
             else:
                 status = "SUCCESS"
                 coverage = results.get("empirical_coverage", "N/A")
                 avg_size = results.get("average_set_size", "N/A")
+                auroc = results.get("auroc", "N/A")
                 
                 if isinstance(coverage, float):
                     coverage = f"{coverage:.4f}"
                 if isinstance(avg_size, float):
                     avg_size = f"{avg_size:.4f}"
+                if isinstance(auroc, float):
+                    auroc = f"{auroc:.4f}"
                     
-            logging.info(f"{dataset:<10} | {scoring:<10} | {coverage:<10} | {avg_size:<15} | {status:<10}")
+            logging.info(f"{dataset:<10} | {scoring:<10} | {coverage:<10} | {avg_size:<15} | {auroc:<10} | {status:<10}")
     
     logging.info("All experiments completed!")
 
