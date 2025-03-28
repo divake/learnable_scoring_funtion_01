@@ -1,0 +1,101 @@
+# VLM scoring function configuration
+inherit: base_config.yaml
+
+# Device configuration
+device: 1  # Use first GPU (cuda:0)
+
+# Directory paths
+data_dir: data/vlm  # Directory where VLM logits are stored
+base_dir: .     # Base directory for relative paths
+model_dir: models/vlm  # Directory to save trained models
+
+# Dataset configurations
+dataset:
+  name: vlm  # Default dataset
+  # These are the 5 datasets for which we have VLM logits
+  datasets: ["ai2d", "mmbench", "oodcv", "scienceqa", "seedbench"]
+  # These are the 11 VLM models for which we have logits
+  models: [
+    "Yi-VL-6B", 
+    "Qwen-VL-Chat", 
+    "mplug-owl2-llama2-7b", 
+    "Monkey-Chat", 
+    "Monkey", 
+    "MoE-LLaVA-Phi2-2.7B-4e", 
+    "llava-v1.6-vicuna-7b", 
+    "llava-v1.6-vicuna-13b", 
+    "llava-v1.6-34b", 
+    "internlm-xcomposer2-vl-7b", 
+    "cogagent-vqa-hf"
+  ]
+  # Default model to use
+  default_model: "cogagent-vqa-hf"
+  # Default dataset to use
+  default_dataset: "ai2d"
+  # Split ratios for train/cal/test if not predefined
+  split_ratio: [0.7, 0.1, 0.2]
+
+# Paths
+plot_dir: plots/vlm
+log_dir: logs/vlm
+
+# Training parameters
+num_epochs: 50
+batch_size: 128
+learning_rate: 0.001
+target_coverage: 0.9
+
+# Cache configuration - disabled for VLM since we're loading from pickle
+cache:
+  enabled: false
+
+# Training configuration
+training:
+  grad_clip:
+    enabled: true
+    max_norm: 0.5
+  loss_weights:
+    coverage: 2.0  # lambda1
+    size: 1.0      # lambda2
+    margin: 0.2    # margin loss weight
+
+# Optimizer configuration
+optimizer:
+  name: 'AdamW'
+  params:
+    lr: 0.001
+    weight_decay: 0.01
+  scheduler:
+    name: 'OneCycleLR'
+    params:
+      max_lr: 0.001
+      pct_start: 0.2
+      div_factor: 20
+      final_div_factor: 100
+      anneal_strategy: 'cos'
+
+# Model architecture - similar to CIFAR-10 settings
+scoring_function:
+  hidden_dims: [64, 32]
+  dropout: 0.2
+  l2_lambda: 0.1
+  activation:
+    name: 'LeakyReLU'
+    params:
+      negative_slope: 0.1
+  final_activation:
+    name: 'Softplus'
+    params:
+      beta: 10  # Sharper separation
+
+# Training constraints
+tau:
+  min: 0.1
+  max: 0.9
+  window_size: 5  # More stable tau
+
+# Set size constraints
+set_size:
+  target: 1
+  max: 3.0
+  margin: 2 
