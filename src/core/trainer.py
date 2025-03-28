@@ -8,6 +8,8 @@ import logging
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import json
+import hashlib
 
 from src.utils.visualization import (
     plot_training_curves, 
@@ -55,6 +57,21 @@ class ScoringFunctionTrainer:
         # Get gradient clipping config
         self.grad_clip_config = config['training']['grad_clip']
         
+        # Initialize caching attributes
+        self.is_cached = False
+        self.original_loaders = {
+            'train': self.train_loader,
+            'cal': self.cal_loader,
+            'test': self.test_loader
+        }
+        self.cached_loaders = {}
+        
+        # Setup cache directory
+        cache_config = config.get('cache', {'enabled': True, 'dir': 'cache'})
+        self.use_cache = cache_config.get('enabled', True)
+        self.cache_dir = os.path.join(config['base_dir'], cache_config.get('dir', 'cache'))
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
     def _setup_optimizer(self, num_epochs):
         """Setup optimizer and scheduler based on configuration"""
         optimizer_config = self.config['optimizer']
@@ -84,6 +101,185 @@ class ScoringFunctionTrainer:
             raise ValueError(f"Unsupported scheduler: {scheduler_config['name']}")
             
         return optimizer, scheduler
+    
+    def _generate_cache_path(self):
+        """Generate a unique path for caching based on model and dataset"""
+        # Generate a unique identifier for the model
+        model_str = str(self.base_model.__class__.__name__)
+        # Use dataset name from config
+        dataset_name = self.config['dataset']['name']
+        # Create cache dir structure
+        cache_subdir = os.path.join(self.cache_dir, dataset_name, model_str)
+        os.makedirs(cache_subdir, exist_ok=True)
+        return cache_subdir
+    
+    def _compute_model_hash(self):
+        """Compute hash of model parameters to ensure cache validity"""
+        model_state = self.base_model.state_dict()
+        hasher = hashlib.md5()
+        
+        # Sort keys to ensure consistent order
+        for key in sorted(model_state.keys()):
+            # Convert tensor to bytes
+            param_bytes = model_state[key].cpu().numpy().tobytes()
+            hasher.update(param_bytes)
+            
+        return hasher.hexdigest()
+    
+    def _save_cache_metadata(self, cache_dir):
+        """Save metadata about the cache to ensure validity"""
+        metadata = {
+            'model_name': self.base_model.__class__.__name__,
+            'model_hash': self._compute_model_hash(),
+            'dataset': self.config['dataset']['name'],
+            'timestamp': str(np.datetime64('now')),
+            'dataset_sizes': {
+                'train': len(self.train_loader.dataset),
+                'cal': len(self.cal_loader.dataset),
+                'test': len(self.test_loader.dataset),
+            }
+        }
+        
+        metadata_path = os.path.join(cache_dir, 'metadata.json')
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+            
+        return metadata
+    
+    def _check_cache_validity(self, cache_dir):
+        """Check if existing cache is valid for current model and dataset"""
+        metadata_path = os.path.join(cache_dir, 'metadata.json')
+        
+        if not os.path.exists(metadata_path):
+            return False
+            
+        try:
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+                
+            # Check if model hash matches
+            current_hash = self._compute_model_hash()
+            if metadata.get('model_hash') != current_hash:
+                logging.info("Model parameters have changed. Cache will be regenerated.")
+                return False
+                
+            # Check if dataset sizes match
+            if metadata.get('dataset_sizes', {}).get('train') != len(self.train_loader.dataset) or \
+               metadata.get('dataset_sizes', {}).get('cal') != len(self.cal_loader.dataset) or \
+               metadata.get('dataset_sizes', {}).get('test') != len(self.test_loader.dataset):
+                logging.info("Dataset sizes have changed. Cache will be regenerated.")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            logging.warning(f"Error checking cache validity: {e}")
+            return False
+    
+    def cache_base_model_outputs(self):
+        """Pre-compute and cache all base model outputs to disk"""
+        if not self.use_cache:
+            logging.info("Caching is disabled in config")
+            return
+            
+        # Generate cache path
+        cache_dir = self._generate_cache_path()
+        
+        # Check if valid cache exists
+        if self._check_cache_validity(cache_dir):
+            logging.info("Found valid cache. Loading cached outputs...")
+            self._load_cached_outputs(cache_dir)
+            return
+            
+        logging.info("Generating new cache for base model outputs...")
+        self.base_model.eval()
+        
+        # Process each dataset
+        for name, loader in [
+            ('train', self.train_loader), 
+            ('cal', self.cal_loader), 
+            ('test', self.test_loader)
+        ]:
+            logging.info(f"Processing {name} dataset...")
+            all_probs = []
+            all_targets = []
+            
+            with torch.no_grad():
+                for inputs, targets in tqdm(loader, desc=f"Caching {name}"):
+                    inputs = inputs.to(self.device)
+                    
+                    # Get softmax probabilities from base model
+                    logits = self.base_model(inputs)
+                    probs = torch.softmax(logits, dim=1)
+                    
+                    # Store probabilities and targets
+                    all_probs.append(probs.cpu())
+                    all_targets.append(targets)
+            
+            # Concatenate all batches
+            probs = torch.cat(all_probs, dim=0)
+            targets = torch.cat(all_targets, dim=0)
+            
+            # Save to disk
+            probs_path = os.path.join(cache_dir, f'{name}_probs.pt')
+            targets_path = os.path.join(cache_dir, f'{name}_targets.pt')
+            
+            torch.save(probs, probs_path)
+            torch.save(targets, targets_path)
+            
+            logging.info(f"Cached {len(targets)} samples for {name} dataset")
+        
+        # Save metadata
+        self._save_cache_metadata(cache_dir)
+        
+        # Load the cached outputs
+        self._load_cached_outputs(cache_dir)
+        
+        # Free up GPU memory by moving base model to CPU if needed
+        if torch.cuda.is_available():
+            self.base_model = self.base_model.cpu()
+            torch.cuda.empty_cache()
+            logging.info("Moved base model to CPU to free GPU memory")
+    
+    def _load_cached_outputs(self, cache_dir):
+        """Load cached outputs from disk and create new data loaders"""
+        from torch.utils.data import TensorDataset, DataLoader
+        
+        self.cached_datasets = {}
+        self.cached_loaders = {}
+        
+        # Load each dataset
+        for name in ['train', 'cal', 'test']:
+            probs_path = os.path.join(cache_dir, f'{name}_probs.pt')
+            targets_path = os.path.join(cache_dir, f'{name}_targets.pt')
+            
+            if not os.path.exists(probs_path) or not os.path.exists(targets_path):
+                raise FileNotFoundError(f"Cache files for {name} dataset not found")
+                
+            probs = torch.load(probs_path)
+            targets = torch.load(targets_path)
+            
+            # Create dataset
+            dataset = TensorDataset(probs, targets)
+            self.cached_datasets[name] = dataset
+            
+            # Create dataloader
+            shuffle = (name == 'train')  # Only shuffle training data
+            self.cached_loaders[name] = DataLoader(
+                dataset,
+                batch_size=self.config['batch_size'],
+                shuffle=shuffle,
+                num_workers=2,  # Reduced workers since data is smaller
+                pin_memory=True
+            )
+        
+        # Update the loaders
+        self.train_loader = self.cached_loaders['train']
+        self.cal_loader = self.cached_loaders['cal']
+        self.test_loader = self.cached_loaders['test']
+        
+        self.is_cached = True
+        logging.info("Successfully loaded cached outputs")
     
     def _init_history(self):
         """Initialize training history dictionary"""
@@ -155,6 +351,10 @@ class ScoringFunctionTrainer:
     
     def train(self, num_epochs, target_coverage, tau_config, set_size_config, save_dir, plot_dir):
         """Main training loop"""
+        # Cache base model outputs at the beginning
+        if not self.is_cached and self.use_cache:
+            self.cache_base_model_outputs()
+        
         optimizer, scheduler = self._setup_optimizer(num_epochs)
         history = self._init_history()
         best_loss = float('inf')
@@ -166,7 +366,7 @@ class ScoringFunctionTrainer:
             tau = compute_tau(
                 cal_loader=self.cal_loader,
                 scoring_fn=self.scoring_fn,
-                base_model=self.base_model,
+                base_model=None if self.is_cached else self.base_model,  # Pass base_model when not cached
                 device=self.device,
                 coverage_target=target_coverage,
                 tau_config=tau_config
@@ -251,7 +451,8 @@ class ScoringFunctionTrainer:
     def _calculate_advanced_metrics(self, tau):
         """Calculate AUROC, AUARC, and ECE metrics on the test set"""
         self.scoring_fn.eval()
-        self.base_model.eval()
+        if not self.is_cached and self.base_model is not None:
+            self.base_model.eval()
         
         all_true_labels = []
         all_scores = []
@@ -261,7 +462,7 @@ class ScoringFunctionTrainer:
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
                 
-                # Get scores for all classes
+                # Get scores for all classes using the appropriate method for cached/non-cached
                 scores, _, _ = self._compute_scores(inputs, targets)
                 
                 all_true_labels.extend(targets.cpu().numpy())
@@ -293,10 +494,17 @@ class ScoringFunctionTrainer:
         return auroc, auarc, ece
     
     def _compute_scores(self, inputs, targets=None):
-        """Helper method to compute scores for inputs using vectorized approach"""
-        with torch.no_grad():
-            logits = self.base_model(inputs)
-            probs = torch.softmax(logits, dim=1)
+        """
+        Helper method to compute scores for inputs
+        Modified to handle both raw inputs and cached probabilities
+        """
+        # Inputs are already probabilities if using cached data
+        if self.is_cached:
+            probs = inputs
+        else:
+            with torch.no_grad():
+                logits = self.base_model(inputs)
+                probs = torch.softmax(logits, dim=1)
         
         # Vectorized approach: reshape to process all probabilities at once
         batch_size, num_classes = probs.shape

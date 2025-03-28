@@ -2,7 +2,13 @@
 inherit: base_config.yaml
 
 # Device configuration
-device: 0
+device: 1
+
+# Caching configuration
+cache:
+  enabled: true
+  dir: cache  # Will be created under base_dir
+  compression: false  # Whether to use compression for cached files
 
 dataset:
   name: cifar100

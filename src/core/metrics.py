@@ -7,22 +7,34 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
     """
     Compute tau threshold for desired coverage on calibration set with constraints and smoothing
     Using vectorized approach for efficiency
+    
+    Modified to handle cached outputs (base_model can be None if inputs are already probabilities)
     """
     if tau_config is None:
         raise ValueError("tau_config must be provided with min, max, and window_size values")
     
     scoring_fn.eval()
-    base_model.eval()
     all_scores = []
+    
+    # Check if we're using cached outputs (base_model is None)
+    using_cached = base_model is None
+    
+    if not using_cached:
+        base_model.eval()
     
     with torch.no_grad():
         for inputs, targets in cal_loader:
             inputs = inputs.to(device)
             targets = targets.to(device)
             
-            # Get softmax probabilities from base model
-            logits = base_model(inputs)
-            probs = torch.softmax(logits, dim=1)
+            # Get softmax probabilities from base model or use inputs directly if cached
+            if using_cached:
+                # Inputs are already probabilities
+                probs = inputs
+            else:
+                # Compute probabilities from base model
+                logits = base_model(inputs)
+                probs = torch.softmax(logits, dim=1)
             
             # Vectorized approach to compute all scores at once
             batch_size, num_classes = probs.shape
