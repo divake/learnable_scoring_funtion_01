@@ -83,14 +83,14 @@ def main():
     base_model = dataset.get_model()
     logging.info("Base model (dummy) loaded successfully")
     
-    # Initialize scoring function with appropriate input dimension
+    # Initialize scoring function with appropriate dimensions for compatibility with core/metrics.py
     scoring_fn = ScoringFunction(
-        input_dim=1,  # Changed to 1 to match the single-element tensor from VLMSampleDataset
+        input_dim=1,  # Changed to 1 to match the expected input in core/metrics.py
         hidden_dims=config.config['scoring_function']['hidden_dims'],
-        output_dim=1,
+        output_dim=1,  # Changed to 1 to match the expected output in core/metrics.py
         config=config.config
     ).to(config.config['device'])
-    logging.info("Scoring function initialized")
+    logging.info("Scoring function initialized for compatibility with core/metrics.py")
     
     # Initialize trainer
     trainer = ScoringFunctionTrainer(
@@ -107,6 +107,12 @@ def main():
     save_dir = os.path.join(config.config.get('model_dir', 'models'), 'vlm')
     os.makedirs(save_dir, exist_ok=True)
     
+    # Make sure plot directory exists
+    plot_dir = config.config.get('plot_dir', 'plots/vlm')
+    os.makedirs(plot_dir, exist_ok=True)
+    
+    logging.info(f"Created directories: {save_dir} and {plot_dir}")
+    
     # Training loop
     results = trainer.train(
         num_epochs=config.config['num_epochs'],
@@ -114,7 +120,7 @@ def main():
         tau_config=config.config['tau'],
         set_size_config=config.config['set_size'],
         save_dir=save_dir,
-        plot_dir=config.config['plot_dir']
+        plot_dir=plot_dir
     )
     
     logging.info(f"Training results: {results}")

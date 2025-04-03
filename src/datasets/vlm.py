@@ -22,8 +22,8 @@ class VLMSampleDataset(TorchDataset):
         Initialize dataset with logits and targets
         
         Args:
-            logits: Tensor of logits
-            targets: Tensor of target indices
+            logits: Tensor of shape [num_samples, 4] containing logits for options A, B, C, D
+            targets: Tensor of shape [num_samples] containing target indices (0 to 3)
         """
         self.logits = logits
         self.targets = targets
@@ -32,28 +32,12 @@ class VLMSampleDataset(TorchDataset):
         return len(self.targets)
     
     def __getitem__(self, idx):
-        # For binary classification with existing core metrics,
-        # we need to format our data as [batch_size, 2] tensor
-        # where each row is [negative_score, positive_score]
-        logit = self.logits[idx].item()  # Get scalar value
-        target = self.targets[idx].item()  # Get scalar value
+        # The core/metrics.py expects the inputs to be 2D softmax probabilities [batch_size, num_classes]
+        # So we return the full 4 logits as a single tensor
+        logits = self.logits[idx]  # Shape: [4]
+        target = self.targets[idx].item()  # Get scalar value (0, 1, 2, or 3)
         
-        # Create a 2-class tensor to be compatible with core metrics
-        # Format: [negative_score, positive_score]
-        two_class = torch.zeros(2, dtype=torch.float32)
-        
-        # If label is 1 (correct), set second position to logit value
-        # If label is 0 (incorrect), set first position to logit value
-        if target == 1:
-            two_class[1] = logit        # Set positive score
-            two_class[0] = 1.0 - logit  # Set negative score
-        else:
-            two_class[0] = logit        # Set negative score
-            two_class[1] = 1.0 - logit  # Set positive score
-        
-        # Return 2-element tensor and label
-        # The target is the index of the correct class (0 or 1)
-        return two_class, target
+        return logits, target
 
 class Dataset(BaseDataset):
     """
@@ -76,7 +60,7 @@ class Dataset(BaseDataset):
         self.split_ratio = self.config['dataset'].get('split_ratio', [0.7, 0.1, 0.2])
         
         # Store the scoring function input dimension for our model
-        self.scoring_dim = self.config['scoring_function'].get('input_dim', 2)
+        self.scoring_dim = 4  # Changed to 4 for multiclass classification
         
         # Load the data
         self.setup()
@@ -130,7 +114,7 @@ class Dataset(BaseDataset):
         # Extract logits and answers from the data
         self.all_samples = []
         
-        # Process the logits and restructure data for the MLP training
+        # Process the logits and restructure data for the scoring function training
         self.processed_logits = []
         self.processed_labels = []
         
@@ -150,27 +134,19 @@ class Dataset(BaseDataset):
                         # Skip items without clear A/B/C/D answers
                         continue
                     
-                    # Get logits for options A, B, C, D
+                    # Extract the first 4 logits corresponding to options A, B, C, D
                     option_logits = logits[:4]
                     
-                    # Add pairs of (logit, is_correct) for each option
-                    for i, logit in enumerate(option_logits):
-                        # Use a float value instead of tensor to avoid numpy warnings
-                        logit_value = float(logit)
-                        
-                        # Normalize logit to 0-1 range if needed
-                        if logit_value > 1.0 or logit_value < 0.0:
-                            logit_value = 1.0 / (1.0 + np.exp(-logit_value))  # Sigmoid
-                        
-                        # Label is 1 if this is the correct answer, 0 otherwise
-                        # This is now the target class (0 or 1) rather than a binary label
-                        # so that the core metrics can access scores using indexing
-                        label = 1 if i == answer_idx else 0
-                        
-                        self.processed_logits.append(logit_value)  # Single scalar value
-                        self.processed_labels.append(label)
+                    # Apply softmax normalization if logits are not already normalized
+                    if np.max(option_logits) > 1.0 or np.min(option_logits) < 0.0:
+                        exp_logits = np.exp(option_logits - np.max(option_logits))
+                        option_logits = exp_logits / exp_logits.sum()
+                    
+                    # Add the sample with all 4 options and the correct label
+                    self.processed_logits.append(option_logits)
+                    self.processed_labels.append(answer_idx)
         
-        # Convert to numpy arrays - make sure to properly handle the array shape
+        # Convert to numpy arrays
         self.processed_logits = np.array(self.processed_logits, dtype=np.float32)
         self.processed_labels = np.array(self.processed_labels, dtype=np.int64)
         
@@ -260,25 +236,23 @@ class Dataset(BaseDataset):
     def get_model(self):
         """
         For VLM datasets, we don't need a model as we're using precomputed logits.
-        Return a dummy model that expands the inputs to match the scoring function.
+        Return a dummy model that properly reshapes the input logits to be compatible
+        with the core/metrics.py expectations.
         
         Returns:
-            torch.nn.Module: Dummy model that reshapes and returns input logits
+            torch.nn.Module: Dummy model that reshapes input logits
         """
-        # Get the scoring function input dimension
-        input_dim = 1  # Fixed to match the scoring function input_dim
-        
         class DummyVLMModel(torch.nn.Module):
-            def __init__(self, input_dim):
+            def __init__(self):
                 super().__init__()
-                self.input_dim = input_dim
             
             def forward(self, x):
-                # Simply pass through the input since formatting is done in the dataset
+                # The compute_tau function expects inputs that can be reshaped to [batch_size*num_classes, 1]
+                # So we need to ensure our output maintains the expected shape [batch_size, num_classes]
                 return x
         
-        model = DummyVLMModel(input_dim)
-        logging.info(f"Using dummy model for VLM logits with input_dim={input_dim}")
+        model = DummyVLMModel()
+        logging.info(f"Using dummy model for VLM logits with 4-way classification")
         return model
     
     def get_dataloaders(self):
@@ -294,14 +268,13 @@ class Dataset(BaseDataset):
             'test': self.test_loader
         }
 
-def run_dataset(config, dataset_name, scoring_name="LogMargin"):
+def run_dataset(config, dataset_name):
     """
-    Run evaluation for VLM dataset using the specified scoring function
+    Run evaluation for VLM dataset using the learnable scoring function
     
     Args:
         config: Global configuration
         dataset_name: Name of the dataset (e.g., 'vlm')
-        scoring_name: Name of the scoring function
         
     Returns:
         Results dictionary
@@ -311,7 +284,7 @@ def run_dataset(config, dataset_name, scoring_name="LogMargin"):
     import torch
     
     try:
-        logging.info(f"=== Starting evaluation for VLM dataset using {scoring_name} scoring function ===")
+        logging.info(f"=== Starting evaluation for VLM dataset with learnable scoring function ===")
         
         # Get dataset-specific configuration
         dataset_config = config.copy()
@@ -327,12 +300,11 @@ def run_dataset(config, dataset_name, scoring_name="LogMargin"):
         # Get the dummy model (for VLM we use precomputed logits, no actual model needed)
         model = dataset.get_model()
         
-        # Initialize scoring function with appropriate input dimension
-        # Logits are usually of shape (num_options,) and we're scoring each option
+        # Initialize scoring function with appropriate input dimension for compatibility with core/metrics.py
         scoring_fn = ScoringFunction(
-            input_dim=1,  # Single logit value per option
+            input_dim=1,  # Changed to 1 to match the expected input in core/metrics.py
             hidden_dims=config['scoring_function']['hidden_dims'],
-            output_dim=1,
+            output_dim=1,  # Changed to 1 to match the expected output in core/metrics.py
             config=config
         ).to(config['device'])
         

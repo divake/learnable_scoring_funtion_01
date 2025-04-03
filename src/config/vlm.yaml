@@ -34,6 +34,8 @@ dataset:
   default_dataset: "ai2d"
   # Split ratios for train/cal/test if not predefined
   split_ratio: [0.7, 0.1, 0.2]
+  # Number of classes for classification
+  num_classes: 4  # A, B, C, D options
 
 # Paths
 plot_dir: plots/vlm
@@ -74,9 +76,9 @@ optimizer:
       final_div_factor: 100
       anneal_strategy: 'cos'
 
-# Model architecture - similar to CIFAR-10 settings
+# Model architecture - updated for 4-way classification
 scoring_function:
-  hidden_dims: [64, 32]
+  hidden_dims: [128, 64]  # Slightly larger network for multiclass
   dropout: 0.2
   l2_lambda: 0.1
   activation:
@@ -84,9 +86,9 @@ scoring_function:
     params:
       negative_slope: 0.1
   final_activation:
-    name: 'Softplus'
+    name: 'Softplus'  # Using Softplus since it's the only supported final activation
     params:
-      beta: 10  # Sharper separation
+      beta: 5  # Lower beta for smoother multiclass outputs
 
 # Training constraints
 tau:
