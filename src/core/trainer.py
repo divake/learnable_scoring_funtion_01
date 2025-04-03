@@ -497,6 +497,7 @@ class ScoringFunctionTrainer:
         """
         Helper method to compute scores for inputs
         Modified to handle both raw inputs and cached probabilities
+        Supports both scalar probability scoring and vector-based scoring
         """
         # Inputs are already probabilities if using cached data
         if self.is_cached:
@@ -506,16 +507,21 @@ class ScoringFunctionTrainer:
                 logits = self.base_model(inputs)
                 probs = torch.softmax(logits, dim=1)
         
-        # Vectorized approach: reshape to process all probabilities at once
-        batch_size, num_classes = probs.shape
-        flat_probs = probs.reshape(-1, 1)  # Reshape to (batch_size * num_classes, 1)
-        
-        # Process all probabilities in a single forward pass
-        # When in eval mode, this won't compute stability_loss
-        flat_scores = self.scoring_fn(flat_probs)
-        
-        # Reshape back to original dimensions
-        scores = flat_scores.reshape(batch_size, num_classes)
+        # Check if we're using vector-based input
+        if hasattr(self.scoring_fn, 'vector_input') and self.scoring_fn.vector_input:
+            # Process entire probability vectors at once (no reshaping)
+            scores = self.scoring_fn(probs)
+        else:
+            # Original approach: reshape to process all probabilities at once
+            batch_size, num_classes = probs.shape
+            flat_probs = probs.reshape(-1, 1)  # Reshape to (batch_size * num_classes, 1)
+            
+            # Process all probabilities in a single forward pass
+            # When in eval mode, this won't compute stability_loss
+            flat_scores = self.scoring_fn(flat_probs)
+            
+            # Reshape back to original dimensions
+            scores = flat_scores.reshape(batch_size, num_classes)
         
         if targets is not None:
             target_scores = scores[torch.arange(len(targets)), targets]

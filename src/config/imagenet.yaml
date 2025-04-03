@@ -65,6 +65,7 @@ optimizer:
 
 # Model architecture
 scoring_function:
+  vector_input: true  # Set to true to use entire probability vector as input
   hidden_dims: [64, 32]
   dropout: 0.2
   l2_lambda: 0.1

@@ -111,22 +111,53 @@ def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
     plotter = BasePlot()
     plotter.setup()
     
+    # Check if we're using vector-based input
+    vector_input = hasattr(scoring_fn, 'vector_input') and scoring_fn.vector_input
+    
     # Create input range from 0 to 1
-    softmax_scores = torch.linspace(0, 1, 1000, device=device).reshape(-1, 1)
+    if vector_input:
+        # For vector input, we need to simulate a single class having probability p
+        # and distribute remaining probability evenly among other classes
+        num_classes = scoring_fn.network[0].in_features
+        num_points = 1000
+        p_values = torch.linspace(0, 1, num_points, device=device)
+        
+        # Create complete probability vectors (for each p value, create a full softmax vector)
+        softmax_scores = torch.zeros((num_points, num_classes), device=device)
+        
+        for i, p in enumerate(p_values):
+            # Put probability p in first class
+            softmax_scores[i, 0] = p
+            # Distribute remaining probability (1-p) evenly among other classes
+            if num_classes > 1:
+                remaining_probs = (1 - p) / (num_classes - 1)
+                softmax_scores[i, 1:] = remaining_probs
+        
+        # Get non-conformity scores - we're only interested in the score for the class with probability p
+        with torch.no_grad():
+            nonconf_scores = scoring_fn(softmax_scores).cpu().numpy()[:, 0]
+        
+        # Plot the result using the first class's probability and its score
+        plt.plot(p_values.cpu().numpy(), nonconf_scores)
+    else:
+        # Original approach for scalar input
+        softmax_scores = torch.linspace(0, 1, 1000, device=device).reshape(-1, 1)
+        
+        # Get non-conformity scores
+        with torch.no_grad():
+            nonconf_scores = scoring_fn(softmax_scores).cpu().numpy()
+        
+        plt.plot(softmax_scores.cpu().numpy(), nonconf_scores)
     
-    # Get non-conformity scores
-    with torch.no_grad():
-        nonconf_scores = scoring_fn(softmax_scores).cpu().numpy()
-    
-    plt.plot(softmax_scores.cpu().numpy(), nonconf_scores)
     plt.xlabel('Softmax Score')
     plt.ylabel('Non-conformity Score')
     plt.title('Learned Scoring Function Behavior')
     plt.grid(True)
     
     # Add reference line y=1-x for comparison
-    ref_line = 1 - softmax_scores.cpu().numpy()
-    plt.plot(softmax_scores.cpu().numpy(), ref_line, '--', label='1-p (reference)')
+    x_values = torch.linspace(0, 1, 1000, device=device).cpu().numpy()
+    ref_line = 1 - x_values
+    plt.plot(x_values, ref_line, '--', label='1-p (reference)')
     plt.legend()
     
     plotter.save(plot_dir, 'scoring_function.png')

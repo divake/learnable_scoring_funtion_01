@@ -9,6 +9,7 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
     Using vectorized approach for efficiency
     
     Modified to handle cached outputs (base_model can be None if inputs are already probabilities)
+    Also supports vector-based scoring function
     """
     if tau_config is None:
         raise ValueError("tau_config must be provided with min, max, and window_size values")
@@ -36,11 +37,16 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
                 logits = base_model(inputs)
                 probs = torch.softmax(logits, dim=1)
             
-            # Vectorized approach to compute all scores at once
-            batch_size, num_classes = probs.shape
-            flat_probs = probs.reshape(-1, 1)
-            flat_scores = scoring_fn(flat_probs)
-            scores = flat_scores.reshape(batch_size, num_classes)
+            # Check if using vector-based approach
+            if hasattr(scoring_fn, 'vector_input') and scoring_fn.vector_input:
+                # Process entire probability vectors directly
+                scores = scoring_fn(probs)
+            else:
+                # Original approach
+                batch_size, num_classes = probs.shape
+                flat_probs = probs.reshape(-1, 1)
+                flat_scores = scoring_fn(flat_probs)
+                scores = flat_scores.reshape(batch_size, num_classes)
             
             # Extract only true class scores for tau calculation
             true_scores = scores[torch.arange(len(targets)), targets]

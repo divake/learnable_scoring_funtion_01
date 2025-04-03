@@ -55,14 +55,18 @@ def main():
     base_model = dataset.get_model()
     logging.info("Base model loaded successfully")
     
-    # Initialize scoring function
+    # Check if vector-based scoring is enabled
+    vector_input = config['scoring_function'].get('vector_input', False)
+    num_classes = config['dataset']['num_classes']
+    
+    # Initialize scoring function with appropriate dimensions
     scoring_fn = ScoringFunction(
-        input_dim=1,
+        input_dim=num_classes if vector_input else 1,
         hidden_dims=config['scoring_function']['hidden_dims'],
-        output_dim=1,
+        output_dim=num_classes if vector_input else 1,
         config=config
     ).to(config['device'])
-    logging.info("Scoring function initialized")
+    logging.info(f"Scoring function initialized with {'vector' if vector_input else 'scalar'} input mode")
     
     # Initialize trainer
     trainer = ScoringFunctionTrainer(

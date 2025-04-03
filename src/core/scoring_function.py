@@ -19,7 +19,10 @@ class ScoringFunction(nn.Module):
         
         if config is None:
             raise ValueError("config must be provided")
-            
+        
+        # Flag to determine whether to process entire probability vector
+        self.vector_input = config['scoring_function'].get('vector_input', False)
+        
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 # More conservative initialization
@@ -30,10 +33,16 @@ class ScoringFunction(nn.Module):
         layers = []
         prev_dim = input_dim
         
-        # First layer specifically initialized to approximate 1-x
-        first_layer = nn.Linear(prev_dim, hidden_dims[0])
-        nn.init.constant_(first_layer.weight, -1.0)  # Initialize to approximate 1-x
-        nn.init.constant_(first_layer.bias, 1.0)
+        if self.vector_input:
+            # For vector input approach, use a more standard initialization
+            first_layer = nn.Linear(prev_dim, hidden_dims[0])
+            nn.init.xavier_uniform_(first_layer.weight)
+            nn.init.zeros_(first_layer.bias)
+        else:
+            # Original approach: layer specifically initialized to approximate 1-x
+            first_layer = nn.Linear(prev_dim, hidden_dims[0])
+            nn.init.constant_(first_layer.weight, -1.0)
+            nn.init.constant_(first_layer.bias, 1.0)
         
         # Get activation configuration
         activation_config = config['scoring_function']['activation']
@@ -56,10 +65,14 @@ class ScoringFunction(nn.Module):
                 nn.Dropout(dropout_rate)
             ])
         
-        # Final layer with bounded initialization
+        # Final layer
         final_layer = nn.Linear(hidden_dims[-1], output_dim)
-        nn.init.uniform_(final_layer.weight, -0.01, 0.01)
-        nn.init.constant_(final_layer.bias, 0.5)
+        if self.vector_input:
+            nn.init.xavier_uniform_(final_layer.weight)
+            nn.init.zeros_(final_layer.bias)
+        else:
+            nn.init.uniform_(final_layer.weight, -0.01, 0.01)
+            nn.init.constant_(final_layer.bias, 0.5)
         layers.append(final_layer)
         
         # Get final activation configuration

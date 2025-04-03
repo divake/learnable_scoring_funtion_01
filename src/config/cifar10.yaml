@@ -39,7 +39,7 @@ training:
   loss_weights:
     coverage: 2.0  # Increased from 1.0 to prioritize coverage
     size: 1.0      # lambda2
-    margin: 0.2    # margin loss weight
+    margin: 0.5    # margin loss weight
 
 # Optimizer configuration
 optimizer:
@@ -58,6 +58,7 @@ optimizer:
 
 # Model architecture
 scoring_function:
+  vector_input: true  # Set to true to use entire probability vector as input
   hidden_dims: [64, 32]
   dropout: 0.2
   l2_lambda: 0.1
@@ -80,4 +81,4 @@ tau:
 set_size:
   target: 1
   max: 3.0
-  margin: 2
+  margin: 10
