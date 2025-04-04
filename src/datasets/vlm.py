@@ -32,8 +32,8 @@ class VLMSampleDataset(TorchDataset):
         return len(self.targets)
     
     def __getitem__(self, idx):
-        # The core/metrics.py expects the inputs to be 2D softmax probabilities [batch_size, num_classes]
-        # So we return the full 4 logits as a single tensor
+        # The conformal prediction framework expects softmax probabilities of shape [batch_size, num_classes]
+        # We need to return the logits directly for proper processing
         logits = self.logits[idx]  # Shape: [4]
         target = self.targets[idx].item()  # Get scalar value (0, 1, 2, or 3)
         
@@ -80,6 +80,22 @@ class Dataset(BaseDataset):
             if os.path.exists(direct_path):
                 file_path = direct_path
                 logging.info(f"Using direct path: {file_path}")
+            else:
+                # Try with absolute path for debugging
+                abs_vlm_dir = os.path.abspath(self.vlm_dir)
+                abs_file_path = os.path.join(abs_vlm_dir, self.model_name, f"{self.dataset_name}.pkl")
+                if os.path.exists(abs_file_path):
+                    file_path = abs_file_path
+                    logging.info(f"Using absolute path: {file_path}")
+                else:
+                    # Check for the known working path
+                    known_path = f"/ssd_4TB/divake/learnable_scoring_funtion_01/data/vlm/{self.model_name}/{self.dataset_name}.pkl"
+                    if os.path.exists(known_path):
+                        file_path = known_path
+                        logging.info(f"Using known fixed path: {file_path}")
+                    else:
+                        logging.error(f"Could not find data file. Tried: {file_path}, {direct_path}, {abs_file_path}, {known_path}")
+                        raise FileNotFoundError(f"VLM logits file not found: {file_path}")
         
         # Load the pickle file
         try:
@@ -137,10 +153,9 @@ class Dataset(BaseDataset):
                     # Extract the first 4 logits corresponding to options A, B, C, D
                     option_logits = logits[:4]
                     
-                    # Apply softmax normalization if logits are not already normalized
-                    if np.max(option_logits) > 1.0 or np.min(option_logits) < 0.0:
-                        exp_logits = np.exp(option_logits - np.max(option_logits))
-                        option_logits = exp_logits / exp_logits.sum()
+                    # Apply softmax normalization to convert raw logits to probabilities
+                    exp_logits = np.exp(option_logits - np.max(option_logits))
+                    option_logits = exp_logits / exp_logits.sum()
                     
                     # Add the sample with all 4 options and the correct label
                     self.processed_logits.append(option_logits)
@@ -237,18 +252,18 @@ class Dataset(BaseDataset):
         """
         For VLM datasets, we don't need a model as we're using precomputed logits.
         Return a dummy model that properly reshapes the input logits to be compatible
-        with the core/metrics.py expectations.
+        with the conformal scoring framework.
         
         Returns:
-            torch.nn.Module: Dummy model that reshapes input logits
+            torch.nn.Module: Dummy model that passes through input logits
         """
         class DummyVLMModel(torch.nn.Module):
             def __init__(self):
                 super().__init__()
             
             def forward(self, x):
-                # The compute_tau function expects inputs that can be reshaped to [batch_size*num_classes, 1]
-                # So we need to ensure our output maintains the expected shape [batch_size, num_classes]
+                # The conformal scoring functions expect softmax probabilities
+                # So we return x directly since we already normalized in _process_data
                 return x
         
         model = DummyVLMModel()
