@@ -49,6 +49,8 @@ vlm:
   use_first_n_logits: 4  # Use only the first 4 logits (for A, B, C, D)
   batch_size: 128  # Batch size for dataloaders
   num_workers: 4  # Number of workers for dataloaders
+  # Run all models flag
+  run_all_models: true  # Set to true to run analysis on all models
   # List of available VLM models
   models: [
     "Yi-VL-6B", 
