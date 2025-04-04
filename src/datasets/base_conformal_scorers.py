@@ -247,6 +247,8 @@ class BaseScorer(ABC):
                 from src.datasets.cifar100 import Dataset
             elif dataset_name == 'imagenet':
                 from src.datasets.imagenet import Dataset
+            elif dataset_name == 'vlm':
+                from src.datasets.vlm import Dataset
             else:
                 raise ValueError(f"Dataset {dataset_name} not supported")
             
@@ -285,63 +287,17 @@ class BaseScorer(ABC):
         """
         pass
     
-    def create_prediction_sets(self, outputs: torch.Tensor, targets: torch.Tensor) -> Tuple[List[List[int]], List[float], List[float]]:
+    def lower_is_better(self) -> bool:
         """
-        Create prediction sets based on model outputs and the calibrated threshold.
+        Indicate whether lower scores are better (more conforming) for this scoring function.
         
-        This method may be overridden by specific scoring functions if needed.
-        
-        Args:
-            outputs: Model output logits of shape (batch_size, num_classes)
-            targets: True class labels of shape (batch_size)
-            
         Returns:
-            Tuple of (prediction_sets, true_class_scores, false_class_scores)
+            True if lower scores indicate more conformity (default for most scorers),
+            False if higher scores indicate more conformity.
         """
-        probabilities = F.softmax(outputs, dim=1)
-        batch_size = targets.size(0)
-        num_classes = probabilities.size(1)
-        
-        prediction_sets = []
-        true_class_scores = []
-        false_class_scores = []
-        
-        for i in range(batch_size):
-            true_class = targets[i].item()
-            prediction_set = []
-            
-            for class_idx in range(num_classes):
-                # Generic computation of nonconformity score for this class
-                score = self.compute_class_nonconformity_score(probabilities[i], class_idx)
-                
-                # Collect scores for true and false classes
-                if class_idx == true_class:
-                    true_class_scores.append(score)
-                else:
-                    false_class_scores.append(score)
-                
-                # Add to prediction set if score <= tau
-                if score <= self.tau:
-                    prediction_set.append(class_idx)
-            
-            prediction_sets.append(prediction_set)
-        
-        return prediction_sets, true_class_scores, false_class_scores
-    
-    def compute_class_nonconformity_score(self, probabilities: torch.Tensor, class_idx: int) -> float:
-        """
-        Compute nonconformity score for a specific class based on probabilities.
-        
-        This is a utility method that may be used by create_prediction_sets.
-        
-        Args:
-            probabilities: Probabilities for a single sample of shape (num_classes)
-            class_idx: Class index to compute score for
-            
-        Returns:
-            Nonconformity score for the specified class
-        """
-        raise NotImplementedError("Subclasses must implement this method based on their scoring function")
+        # By default, most conformal methods use lower scores to indicate higher conformity
+        # Subclasses can override this if they have the opposite behavior
+        return True
     
     def calibrate(self) -> float:
         """
@@ -365,8 +321,18 @@ class BaseScorer(ABC):
                 nonconformity_scores.extend(batch_scores)
         
         # Calculate tau as the percentile corresponding to target coverage
-        self.tau = np.percentile(nonconformity_scores, 100 * self.target_coverage)
-        logging.info(f"Calibration complete. Tau value: {self.tau:.4f}")
+        # The percentile depends on whether lower or higher scores are better
+        if self.lower_is_better():
+            # For lower-is-better scoring functions (1-p, APS, LogMargin, Sparsemax)
+            # We want tau such that P(score ≤ tau) = target_coverage
+            self.tau = np.percentile(nonconformity_scores, 100 * self.target_coverage)
+            logging.info(f"Calibration complete. Tau value: {self.tau:.4f} (lower scores are better)")
+        else:
+            # For higher-is-better scoring functions
+            # We want tau such that P(score ≥ tau) = target_coverage
+            # Equivalent to P(score < tau) = 1 - target_coverage
+            self.tau = np.percentile(nonconformity_scores, 100 * (1 - self.target_coverage))
+            logging.info(f"Calibration complete. Tau value: {self.tau:.4f} (higher scores are better)")
         
         # Store nonconformity scores for plotting
         self.nonconformity_scores = nonconformity_scores
@@ -506,6 +472,7 @@ class BaseScorer(ABC):
         # For AUROC calculation
         all_true_labels = []
         all_probabilities = []
+        all_sample_scores = []  # Store scores for all classes for each sample
         
         with torch.no_grad():
             for inputs, targets in tqdm(self.dataset.test_loader, desc="Evaluation"):
@@ -518,7 +485,10 @@ class BaseScorer(ABC):
                 all_probabilities.append(probabilities.cpu().numpy())
                 
                 # Create prediction sets and collect metrics
-                prediction_sets, batch_true_scores, batch_false_scores = self.create_prediction_sets(outputs, targets)
+                prediction_sets, batch_true_scores, batch_false_scores, batch_all_scores = self.create_prediction_sets(outputs, targets)
+                
+                # Store all class scores for each sample
+                all_sample_scores.extend(batch_all_scores)
                 
                 # Update metrics
                 for i, pred_set in enumerate(prediction_sets):
@@ -537,10 +507,36 @@ class BaseScorer(ABC):
         average_set_size = np.mean(set_sizes)
         median_set_size = np.median(set_sizes)
         
-        # Calculate AUROC
+        # Convert to numpy arrays
         all_true_labels = np.array(all_true_labels)
         all_probabilities = np.vstack(all_probabilities)
-        auroc = calculate_auroc(all_true_labels, all_probabilities)
+        
+        # Handle NaN values
+        all_probabilities = np.nan_to_num(all_probabilities, nan=1.0/all_probabilities.shape[1])
+        
+        # Calculate AUROC from base model probabilities
+        base_auroc = calculate_auroc(all_true_labels, all_probabilities)
+        
+        # Convert all_sample_scores to a proper numpy array
+        # Ensure there are no NaN or Inf values
+        score_matrix = np.array(all_sample_scores)
+        score_matrix = np.nan_to_num(score_matrix, nan=0.5, posinf=1.0, neginf=0.0)
+        
+        # Calculate AUROC directly from conformal scores
+        # Pass higher_is_better based on the scoring function's property
+        # For most conformal methods, lower scores are better (more conforming)
+        score_auroc = calculate_auroc(
+            all_true_labels, 
+            score_matrix, 
+            higher_is_better=not self.lower_is_better(),  # Invert based on scorer's property
+            normalize_scores=False  # Don't normalize conformal scores as they have special meaning
+        )
+        
+        logging.info(f"AUROC from base probabilities: {base_auroc:.4f}")
+        logging.info(f"AUROC from {self.__class__.__name__} nonconformity scores: {score_auroc:.4f}")
+        
+        # Use the scoring-specific AUROC
+        auroc = score_auroc
         
         # Debug: print set size distribution
         set_size_counts = np.bincount(set_sizes)
@@ -561,6 +557,8 @@ class BaseScorer(ABC):
             "set_size_min": np.min(set_sizes),
             "set_size_max": np.max(set_sizes),
             "auroc": auroc,
+            "base_auroc": base_auroc,
+            "score_auroc": score_auroc,
         }
         
         logging.info(f"Evaluation Results for {self.config['dataset']['name']} with {self.__class__.__name__}:")
@@ -568,15 +566,100 @@ class BaseScorer(ABC):
         logging.info(f"  Empirical Coverage: {empirical_coverage:.4f}")
         logging.info(f"  Average Set Size: {average_set_size:.4f}")
         logging.info(f"  Median Set Size: {median_set_size:.4f}")
-        logging.info(f"  AUROC: {auroc:.4f}")
+        logging.info(f"  AUROC (scoring function): {auroc:.4f}")
+        logging.info(f"  AUROC (base model): {base_auroc:.4f}")
         
         # Plot score distributions
         self.plot_score_distributions(true_class_scores, false_class_scores)
         
-        # Plot ROC curve
-        self.plot_roc_curve(all_true_labels, all_probabilities)
+        # Plot ROC curve using the same parameters used for score_auroc calculation
+        # Prepare the same scores used for AUROC calculation
+        plot_scores = score_matrix.copy()
+        if self.lower_is_better():
+            # If lower scores are better, use the same transformation as in calculate_auroc
+            # This ensures the plot is consistent with the AUROC calculation
+            plot_scores = -plot_scores if np.max(np.abs(plot_scores)) > 1.1 else 1.0 - plot_scores
+            
+        self.plot_roc_curve(all_true_labels, plot_scores)
         
         return results
+
+    def create_prediction_sets(self, outputs: torch.Tensor, targets: torch.Tensor) -> Tuple[List[List[int]], List[float], List[float], List[List[float]]]:
+        """
+        Create prediction sets based on model outputs and the calibrated threshold.
+        
+        This method may be overridden by specific scoring functions if needed.
+        
+        Args:
+            outputs: Model output logits of shape (batch_size, num_classes)
+            targets: True class labels of shape (batch_size)
+            
+        Returns:
+            Tuple of (prediction_sets, true_class_scores, false_class_scores, all_class_scores)
+        """
+        probabilities = F.softmax(outputs, dim=1)
+        batch_size = targets.size(0)
+        num_classes = probabilities.size(1)
+        
+        prediction_sets = []
+        true_class_scores = []
+        false_class_scores = []
+        all_class_scores = []  # Store scores for all classes for each sample
+        
+        for i in range(batch_size):
+            true_class = targets[i].item()
+            prediction_set = []
+            sample_all_scores = []  # Scores for all classes for this sample
+            
+            for class_idx in range(num_classes):
+                # Generic computation of nonconformity score for this class
+                score = self.compute_class_nonconformity_score(probabilities[i], class_idx)
+                sample_all_scores.append(score)
+                
+                # Collect scores for true and false classes
+                if class_idx == true_class:
+                    true_class_scores.append(score)
+                else:
+                    false_class_scores.append(score)
+                
+                # Check inclusion criterion based on whether lower is better
+                should_include = False
+                if self.lower_is_better():
+                    # Include class if score <= tau for lower-is-better functions
+                    should_include = score <= self.tau
+                else:
+                    # Include class if score >= tau for higher-is-better functions
+                    should_include = score >= self.tau
+                
+                # Add to prediction set if meets criterion
+                if should_include:
+                    prediction_set.append(class_idx)
+            
+            # Ensure at least one prediction (most likely class) if prediction set is empty
+            if len(prediction_set) == 0:
+                most_likely_class = torch.argmax(probabilities[i]).item()
+                prediction_set.append(most_likely_class)
+                logging.warning(f"Empty prediction set detected. Added most likely class: {most_likely_class}")
+            
+            prediction_sets.append(prediction_set)
+            all_class_scores.append(sample_all_scores)
+        
+        return prediction_sets, true_class_scores, false_class_scores, all_class_scores
+    
+    def compute_class_nonconformity_score(self, probabilities: torch.Tensor, class_idx: int) -> float:
+        """
+        Compute nonconformity score for a specific class based on probabilities.
+        
+        This is a utility method that may be used by create_prediction_sets.
+        
+        Args:
+            probabilities: Probabilities for a single sample of shape (num_classes)
+            class_idx: Class index to compute score for
+            
+        Returns:
+            Nonconformity score for the specified class
+        """
+        raise NotImplementedError("Subclasses must implement this method based on their scoring function")
 
 # ==================== Scoring Function Implementations ====================
 
@@ -678,7 +761,35 @@ class APS_Scorer(BaseScorer):
         
         return nonconformity_scores
     
-    def create_prediction_sets(self, outputs: torch.Tensor, targets: torch.Tensor) -> Tuple[List[List[int]], List[float], List[float]]:
+    def compute_class_nonconformity_score(self, probabilities: torch.Tensor, class_idx: int) -> float:
+        """
+        Compute APS nonconformity score for a specific class.
+        
+        Args:
+            probabilities: Probabilities for a single sample of shape (num_classes)
+            class_idx: Class index to compute score for
+            
+        Returns:
+            APS nonconformity score for the specified class
+        """
+        # Sort probabilities in descending order
+        sorted_probs, sorted_indices = torch.sort(probabilities, descending=True)
+        
+        # Compute cumulative sums
+        cum_probs = torch.cumsum(sorted_probs, dim=0)
+        
+        # Find position of class in sorted indices
+        class_pos = (sorted_indices == class_idx).nonzero(as_tuple=True)[0].item()
+        
+        # Compute score: cumulative probability before class
+        if class_pos > 0:
+            score = cum_probs[class_pos - 1].item()
+        else:
+            score = 0.0  # Class is most probable
+        
+        return score
+    
+    def create_prediction_sets(self, outputs: torch.Tensor, targets: torch.Tensor) -> Tuple[List[List[int]], List[float], List[float], List[List[float]]]:
         """
         Create prediction sets based on model outputs and the calibrated threshold.
         
@@ -689,7 +800,7 @@ class APS_Scorer(BaseScorer):
             targets: True class labels of shape (batch_size)
             
         Returns:
-            Tuple of (prediction_sets, true_class_scores, false_class_scores)
+            Tuple of (prediction_sets, true_class_scores, false_class_scores, all_class_scores)
         """
         probabilities = F.softmax(outputs, dim=1)
         batch_size = targets.size(0)
@@ -697,6 +808,7 @@ class APS_Scorer(BaseScorer):
         prediction_sets = []
         true_class_scores = []
         false_class_scores = []
+        all_class_scores = []  # Store scores for all classes
         
         for i in range(batch_size):
             # Get true class
@@ -708,18 +820,25 @@ class APS_Scorer(BaseScorer):
             # Compute cumulative sums
             cum_probs = torch.cumsum(sorted_probs, dim=0)
             
-            # Find the smallest k such that cum_probs[k] > tau
-            k = torch.searchsorted(cum_probs, self.tau, right=True).item()
+            # Find the smallest k such that cum_probs[k] >= tau
+            # We use right=False to find the first index where cum_probs >= tau
+            k = torch.searchsorted(cum_probs, self.tau, right=False).item()
             
-            # Create prediction set
+            # Create prediction set - include classes 0 to k
+            # Note: k is now the index where cum_probs[k] first exceeds tau
+            # We want to include all classes up to and including k
             prediction_set = sorted_indices[:k+1].cpu().numpy().tolist()
             
             # Check for empty prediction sets (should not happen due to tau >= 0)
             if len(prediction_set) == 0:
                 # Ensure at least one prediction (most likely class)
                 prediction_set = [sorted_indices[0].item()]
+                logging.warning("Empty prediction set detected in APS. Added most likely class.")
             
             prediction_sets.append(prediction_set)
+            
+            # Store all class scores
+            sample_all_scores = []
             
             # Collect scores for true and false classes
             for j, class_idx in enumerate(sorted_indices.cpu().numpy()):
@@ -729,12 +848,20 @@ class APS_Scorer(BaseScorer):
                 else:
                     score = 0.0
                     
+                # Store the score for this class
+                # We need to map back from sorted order to original class index
+                while len(sample_all_scores) <= class_idx:
+                    sample_all_scores.append(0.0)  # Fill with placeholders
+                sample_all_scores[class_idx] = score
+                    
                 if class_idx == true_class:
                     true_class_scores.append(score)
                 else:
                     false_class_scores.append(score)
+            
+            all_class_scores.append(sample_all_scores)
         
-        return prediction_sets, true_class_scores, false_class_scores
+        return prediction_sets, true_class_scores, false_class_scores, all_class_scores
 
 
 @register_scorer("LogMargin")
@@ -798,8 +925,12 @@ class LogMargin_Scorer(BaseScorer):
             Log-margin nonconformity score for the specified class
         """
         class_prob = probabilities[class_idx].item()
-        max_prob, _ = torch.max(probabilities, dim=0)
+        max_prob, max_idx = torch.max(probabilities, dim=0)
         max_prob = max_prob.item()
+        
+        # If this class is the max probability class, score should be 0
+        if class_idx == max_idx.item():
+            return 0.0
         
         if class_prob > 0:  # Avoid log(0)
             return np.log(max_prob) - np.log(class_prob)
@@ -839,63 +970,54 @@ class Sparsemax_Scorer(BaseScorer):
         
         logging.info(f"Sparsemax initialized with delta: {self.delta}")
     
-    def sparsemax(self, logits: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def sparsemax(logits):
         """
-        Compute the sparsemax transformation for the given logits.
-        
-        Args:
-            logits: Tensor of shape (batch_size, num_classes) containing the logits
-            
-        Returns:
-            Tensor of shape (batch_size, num_classes) containing the sparsemax probabilities
+        Sparsemax function implementation
         """
-        # Implementation based on the paper "From Softmax to Sparsemax: A Sparse Model of Attention and Multi-Label Classification"
+        # Handle NaN values in input
+        logits = torch.nan_to_num(logits, nan=0.0)
         
-        # For numerical stability, subtract the max logit
-        logits = logits - logits.max(dim=-1, keepdim=True)[0]
+        # For numerical stability
+        logits = logits - logits.max(dim=1, keepdim=True)[0]
         
         # Sort logits in descending order
-        sorted_logits, _ = torch.sort(logits, dim=-1, descending=True)
+        z_sorted, _ = torch.sort(logits, dim=1, descending=True)
         
         # Calculate cumulative sum
-        cumsum = torch.cumsum(sorted_logits, dim=-1)
+        z_cumsum = torch.cumsum(z_sorted, dim=1)
         
-        # Get the number of classes
-        num_classes = logits.size(-1)
+        # Find the optimal k
+        k = torch.arange(1, logits.size(1) + 1, dtype=logits.dtype, device=logits.device)
+        k = k.view(1, -1)
+        z_sorted = z_sorted.to(k.dtype)  # Ensure same dtype
         
-        # Create indices tensor
-        indices = torch.arange(1, num_classes + 1, device=logits.device).float()
-        indices = indices.view(*[1 for _ in range(logits.dim() - 1)], num_classes)
-        
-        # Expand indices to match logits shape
-        indices = indices.expand_as(sorted_logits)
-        
-        # Calculate condition: 1 + k*sorted_logits[k] > cumsum[k]
-        condition = 1 + indices * sorted_logits > cumsum
+        # Threshold
+        threshold = 1 + k * z_sorted
+        cumsum_threshold = z_cumsum < threshold
         
         # Find the largest k that satisfies the condition
-        k = torch.max(torch.sum(condition.to(torch.int32), dim=-1) - 1, torch.tensor(0, device=logits.device))
+        k_threshold = torch.sum(cumsum_threshold, dim=1, keepdim=True)
         
-        # Handle the case where k is a scalar (for a single example)
-        if k.dim() == 0:
-            k = k.unsqueeze(0)
+        # Edge case: if k_threshold is 0, set it to 1 to avoid division by zero
+        k_threshold = torch.clamp(k_threshold, min=1)
         
-        # Calculate threshold
-        thresholds = []
-        batch_size = logits.size(0)
+        # Calculate threshold value
+        tau = (z_cumsum.gather(1, k_threshold - 1) - 1) / k_threshold.to(z_cumsum.dtype)
         
-        for i in range(batch_size):
-            k_i = k[i].item()
-            if k_i == 0:
-                threshold = sorted_logits[i, 0] - 1
-            else:
-                threshold = (cumsum[i, k_i] - 1) / (k_i + 1)
-            thresholds.append(threshold)
+        # Calculate sparsemax values
+        sparsemax_val = torch.clamp(logits - tau, min=0)
         
-        threshold = torch.tensor(thresholds, device=logits.device).unsqueeze(1)
+        # Normalize to ensure sum to 1
+        sum_vals = torch.sum(sparsemax_val, dim=1, keepdim=True)
+        # Handle case where sum is 0
+        sum_vals = torch.where(sum_vals == 0, torch.ones_like(sum_vals), sum_vals)
+        sparsemax_val = sparsemax_val / sum_vals
         
-        # Apply sparsemax transformation
-        return torch.clamp(logits - threshold, min=0)
+        # Ensure no NaN values in output
+        sparsemax_val = torch.nan_to_num(sparsemax_val, nan=1.0/logits.size(1))
+        
+        return sparsemax_val
     
     def compute_nonconformity_score(self, probabilities: torch.Tensor, targets: torch.Tensor) -> List[float]:
         """
@@ -911,6 +1033,9 @@ class Sparsemax_Scorer(BaseScorer):
         Returns:
             List of nonconformity scores, one for each sample in the batch
         """
+        # Safety check to avoid NaN or inf values in input probabilities
+        probabilities = torch.nan_to_num(probabilities, nan=1.0/probabilities.size(1))
+        
         # We need to convert probabilities back to logits for sparsemax
         # Add a small epsilon to avoid log(0)
         epsilon = 1e-10
@@ -940,7 +1065,52 @@ class Sparsemax_Scorer(BaseScorer):
         
         return nonconformity_scores
     
-    def create_prediction_sets(self, outputs: torch.Tensor, targets: torch.Tensor) -> Tuple[List[List[int]], List[float], List[float]]:
+    def compute_class_nonconformity_score(self, probabilities: torch.Tensor, class_idx: int) -> float:
+        """
+        Compute nonconformity score for a specific class based on sparsemax of logits.
+        
+        Args:
+            probabilities: Softmax probabilities for a single sample of shape (num_classes)
+            class_idx: The index of the class to compute the score for
+            
+        Returns:
+            The nonconformity score for the specified class
+        """
+        try:
+            # Add a small epsilon to avoid log(0)
+            epsilon = 1e-10
+            logits = torch.log(probabilities + epsilon)
+            
+            # Handle NaN values
+            logits = torch.nan_to_num(logits, nan=0.0)
+            
+            # Apply sparsemax to get probability distribution
+            if logits.dim() == 1:
+                logits = logits.unsqueeze(0)  # Add batch dimension if missing
+                
+            sparsemax_probs = self.sparsemax(logits)
+            
+            # Get the class probability
+            if sparsemax_probs.dim() > 1:
+                sparsemax_probs = sparsemax_probs.squeeze(0)  # Remove batch dimension
+                
+            # Check if class_idx is valid
+            if class_idx >= len(sparsemax_probs):
+                logging.warning(f"Invalid class index {class_idx} for tensor of size {sparsemax_probs.size()}")
+                return 1.0  # Return worst nonconformity score
+                
+            class_prob = sparsemax_probs[class_idx].item()
+            max_prob = torch.max(sparsemax_probs).item()
+            
+            # Calculate nonconformity score: max(max_prob - class_prob - delta, 0)
+            score = max(max_prob - class_prob - self.delta, 0)
+            
+            return float(score)
+        except Exception as e:
+            logging.warning(f"Error in compute_class_nonconformity_score: {e}")
+            return 1.0  # Return worst nonconformity score
+    
+    def create_prediction_sets(self, outputs: torch.Tensor, targets: torch.Tensor) -> Tuple[List[List[int]], List[float], List[float], List[List[float]]]:
         """
         Create prediction sets based on model outputs and the calibrated threshold.
         
@@ -951,13 +1121,15 @@ class Sparsemax_Scorer(BaseScorer):
             targets: True class labels of shape (batch_size)
             
         Returns:
-            Tuple of (prediction_sets, true_class_scores, false_class_scores)
+            Tuple of (prediction_sets, true_class_scores, false_class_scores, all_class_scores)
         """
-        # Apply sparsemax transformation
+        # Apply softmax and then convert to logits for sparsemax
         probabilities = F.softmax(outputs, dim=1)
-        # We need to convert probabilities back to logits for sparsemax
         epsilon = 1e-10
+        probabilities = torch.nan_to_num(probabilities, nan=1.0/probabilities.size(1))
         logits = torch.log(probabilities + epsilon)
+        
+        # Apply sparsemax transformation
         sparsemax_probs = self.sparsemax(logits)
         
         batch_size = targets.size(0)
@@ -966,6 +1138,7 @@ class Sparsemax_Scorer(BaseScorer):
         prediction_sets = []
         true_class_scores = []
         false_class_scores = []
+        all_class_scores = []
         
         for i in range(batch_size):
             # Get true class
@@ -976,6 +1149,7 @@ class Sparsemax_Scorer(BaseScorer):
             max_score = max_score.item()
             
             prediction_set = []
+            sample_all_scores = []
             
             # Compute scores for all classes
             for class_idx in range(num_classes):
@@ -983,6 +1157,7 @@ class Sparsemax_Scorer(BaseScorer):
                 
                 # Compute nonconformity score: max(z_max - z_class - delta, 0)
                 score = max(max_score - class_score - self.delta, 0)
+                sample_all_scores.append(score)
                 
                 # Collect scores for true and false classes
                 if class_idx == true_class:
@@ -994,9 +1169,16 @@ class Sparsemax_Scorer(BaseScorer):
                 if score <= self.tau:
                     prediction_set.append(class_idx)
             
+            # Ensure prediction set is not empty
+            if len(prediction_set) == 0:
+                most_likely_class = torch.argmax(probabilities[i]).item()
+                prediction_set.append(most_likely_class)
+                logging.warning(f"Empty prediction set detected in Sparsemax. Added most likely class: {most_likely_class}")
+            
             prediction_sets.append(prediction_set)
+            all_class_scores.append(sample_all_scores)
         
-        return prediction_sets, true_class_scores, false_class_scores
+        return prediction_sets, true_class_scores, false_class_scores, all_class_scores
 
 # ==================== Runner Functions ====================
 
@@ -1237,7 +1419,7 @@ def main():
     set_seed(seed)
     
     # Determine which datasets to run
-    available_datasets = ['cifar10', 'cifar100', 'imagenet']  # Default supported datasets
+    available_datasets = ['cifar10', 'cifar100', 'imagenet', 'vlm']  # Updated supported datasets
     if args.dataset == 'all':
         datasets = available_datasets
         logging.info(f"Running evaluation for all datasets: {', '.join(datasets)}")

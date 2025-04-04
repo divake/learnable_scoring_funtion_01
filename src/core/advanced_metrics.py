@@ -19,24 +19,40 @@ import os
 from sklearn.preprocessing import label_binarize
 
 
-def calculate_auroc(y_true: np.ndarray, y_scores: np.ndarray, multi_class: str = 'ovr') -> float:
+def calculate_auroc(y_true: np.ndarray, y_scores: np.ndarray, 
+                multi_class: str = 'ovr', higher_is_better: bool = True,
+                normalize_scores: bool = True, handle_errors: bool = True) -> float:
     """
     Calculate the Area Under the Receiver Operating Characteristic curve (AUROC).
     
     Args:
-        y_true: Ground truth binary labels (0 for negative, 1 for positive)
+        y_true: Ground truth labels
         y_scores: Predicted scores or probabilities
         multi_class: Strategy for multi-class classification:
-                    'ovr' - One-vs-Rest
+                    'ovr' - One-vs-Rest (default)
                     'ovo' - One-vs-One
+        higher_is_better: Whether higher scores indicate higher confidence.
+                          Set to False for conformal scores where lower values
+                          indicate higher confidence.
+        normalize_scores: Whether to normalize scores to sum to 1.0. Set to False
+                          if scores are already properly scaled or normalization
+                          would distort their meaning.
+        handle_errors: If True, catch and handle errors, returning 0.5 for failures.
+                       If False, allow exceptions to propagate.
     
     Returns:
         AUROC score
     
     Note:
-        For binary classification, y_scores should be the probability of the positive class.
+        For binary classification, y_scores should be the probability/score of the positive class.
         For multi-class, y_scores should be a 2D array of shape (n_samples, n_classes).
+        
+        For conformal prediction methods where lower scores indicate higher confidence:
+        - Set higher_is_better=False to automatically invert the scores
+        - For methods like '1-p', 'APS', 'LogMargin', or 'Sparsemax', lower scores 
+          typically indicate higher confidence, so use higher_is_better=False
     """
+    import logging
     from sklearn.metrics import roc_auc_score
     
     # Handle different input types
@@ -45,38 +61,149 @@ def calculate_auroc(y_true: np.ndarray, y_scores: np.ndarray, multi_class: str =
     if isinstance(y_scores, torch.Tensor):
         y_scores = y_scores.cpu().numpy()
     
-    # Check if binary or multi-class
-    if len(y_scores.shape) == 1 or y_scores.shape[1] == 1:
+    # Replace NaN or infinite values with safe defaults
+    y_scores = np.nan_to_num(y_scores, nan=0.5, posinf=1.0, neginf=0.0)
+    
+    # Verify that we have enough samples and unique classes
+    unique_classes = np.unique(y_true)
+    if len(unique_classes) < 2:
+        message = f"Need at least 2 classes for AUROC, found {len(unique_classes)}"
+        if handle_errors:
+            logging.warning(message)
+            return 0.5
+        else:
+            raise ValueError(message)
+    
+    # Check for each class having examples
+    for cls in unique_classes:
+        if np.sum(y_true == cls) <= 1:
+            message = f"Class {cls} has too few examples for reliable AUROC calculation"
+            if handle_errors:
+                logging.warning(message)
+                # Continue with calculation but warn
+            else:
+                raise ValueError(message)
+    
+    # If higher scores are not better (like in conformal prediction lower scores indicate higher confidence)
+    # invert the scores by negation or use 1-score depending on their range
+    if not higher_is_better:
+        # Check if scores are roughly in [0,1] range to decide transformation
+        if np.min(y_scores) >= -0.1 and np.max(y_scores) <= 1.1:
+            # For scores in [0,1], use 1-score to invert
+            y_scores = 1.0 - y_scores
+        else:
+            # For scores outside [0,1], use negation to invert
+            y_scores = -y_scores
+        logging.info("Inverted scores since higher_is_better=False")
+    
+    # Determine if binary or multi-class classification
+    is_binary = False
+    
+    # Case 1: Only 2 unique classes
+    if len(unique_classes) == 2:
+        is_binary = True
+        
+    # Case 2: One-dimensional scores array
+    if len(y_scores.shape) == 1:
+        is_binary = True
+        
+    # Case 3: Two-column scores array (typical binary classifier output)
+    if len(y_scores.shape) > 1 and y_scores.shape[1] == 2:
+        is_binary = True
+        # Use probability of positive class (second column)
+        y_scores = y_scores[:, 1]
+    
+    # Case 4: Single-column scores array
+    if len(y_scores.shape) > 1 and y_scores.shape[1] == 1:
+        is_binary = True
+        y_scores = y_scores.flatten()
+    
+    if is_binary:
         # Binary classification
-        return roc_auc_score(y_true, y_scores)
+        try:
+            # For binary, remap classes to 0 and 1
+            # This handles cases where classes might be e.g., [2, 7] instead of [0, 1]
+            binary_y_true = np.zeros_like(y_true)
+            binary_y_true[y_true == unique_classes[1]] = 1
+            
+            return roc_auc_score(binary_y_true, y_scores)
+        except Exception as e:
+            message = f"Error calculating binary AUROC: {e}"
+            if handle_errors:
+                logging.error(message)
+                return 0.5
+            else:
+                raise ValueError(message) from e
     else:
         # Multi-class classification
-        # For multi-class, we need to ensure the scores are proper probabilities
-        # that sum to 1.0 across classes
-        
-        # Get the number of classes from the scores shape
-        n_classes = y_scores.shape[1]
-        
-        # Check if we need to normalize the scores
-        row_sums = np.sum(y_scores, axis=1)
-        if not np.allclose(row_sums, 1.0):
-            # Normalize to ensure scores sum to 1.0 for each sample
-            y_scores = y_scores / row_sums[:, np.newaxis]
-        
-        # For one-vs-rest approach, we can use label_binarize to convert y_true to one-hot encoding
-        if multi_class == 'ovr':
-            # Get unique classes
-            classes = np.unique(y_true)
-            y_true_bin = label_binarize(y_true, classes=classes)
-            
-            # If only 2 classes, roc_auc_score expects 1D array of scores for the positive class
-            if len(classes) == 2:
-                return roc_auc_score(y_true_bin, y_scores[:, 1])
+        # Check dimensions match
+        if len(y_scores.shape) < 2 or y_scores.shape[1] != len(unique_classes):
+            message = (f"Number of score columns ({y_scores.shape[1] if len(y_scores.shape) > 1 else 1}) "
+                     f"doesn't match number of classes ({len(unique_classes)})")
+            if handle_errors:
+                logging.warning(message)
+                # Try to continue by reshaping if possible
+                if len(y_scores.shape) == 1 and len(y_scores) % len(unique_classes) == 0:
+                    y_scores = y_scores.reshape(-1, len(unique_classes))
+                else:
+                    logging.error("Cannot reshape scores to match class count")
+                    return 0.5
             else:
-                return roc_auc_score(y_true_bin, y_scores, multi_class=multi_class, average='macro')
-        else:
-            # For one-vs-one, we can use the multi_class parameter directly
-            return roc_auc_score(y_true, y_scores, multi_class=multi_class, average='macro')
+                raise ValueError(message)
+        
+        # Normalize scores if requested and necessary
+        if normalize_scores:
+            # Check if scores need normalization
+            row_sums = np.sum(y_scores, axis=1)
+            
+            # Handle rows that sum to 0 or NaN
+            zero_rows = np.isclose(row_sums, 0) | np.isnan(row_sums)
+            if np.any(zero_rows):
+                # For rows that sum to 0, replace with uniform distribution
+                uniform_prob = 1.0 / len(unique_classes)
+                for i in np.where(zero_rows)[0]:
+                    y_scores[i, :] = uniform_prob
+                
+                # Recalculate row sums
+                row_sums = np.sum(y_scores, axis=1)
+                
+            # Normalize scores to sum to 1.0
+            if not np.allclose(row_sums, 1.0):
+                # Add small epsilon to avoid division by zero
+                epsilon = 1e-10
+                row_sums = row_sums + epsilon
+                y_scores = y_scores / row_sums[:, np.newaxis]
+        
+        # Final check for any remaining NaN values
+        y_scores = np.nan_to_num(y_scores, nan=1.0/len(unique_classes))
+        
+        try:
+            # For one-vs-rest approach, binarize labels with explicit classes to handle non-consecutive indices
+            if multi_class == 'ovr':
+                # Create proper binary matrix for ground truth labels
+                y_true_bin = np.zeros((len(y_true), len(unique_classes)))
+                for i, cls in enumerate(unique_classes):
+                    y_true_bin[:, i] = (y_true == cls).astype(int)
+                
+                # If only 2 classes, use simpler computation
+                if len(unique_classes) == 2:
+                    return roc_auc_score(y_true_bin[:, 1], y_scores[:, 1])
+                else:
+                    return roc_auc_score(y_true_bin, y_scores, multi_class=multi_class, average='macro')
+            else:
+                # For one-vs-one, map classes to consecutive integers first
+                class_mapping = {cls: i for i, cls in enumerate(unique_classes)}
+                y_true_mapped = np.array([class_mapping[cls] for cls in y_true])
+                
+                return roc_auc_score(y_true_mapped, y_scores, multi_class=multi_class, average='macro')
+                
+        except Exception as e:
+            message = f"Error calculating multi-class AUROC: {e}"
+            if handle_errors:
+                logging.error(message)
+                return 0.5
+            else:
+                raise ValueError(message) from e
 
 
 def calculate_auarc(prediction_sets: List[set], true_labels: np.ndarray, 

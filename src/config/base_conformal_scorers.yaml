@@ -38,6 +38,34 @@ imagenet:
   std: [0.229, 0.224, 0.225]
   data_dir: data/imagenet
 
+vlm:
+  num_classes: 4  # A, B, C, D options for multiple choice
+  data_dir: /ssd_4TB/divake/learnable_scoring_funtion_01/data/vlm  # Absolute path to VLM data
+  default_model: cogagent-vqa-hf  # Default VLM model
+  default_dataset: ai2d  # Default VLM dataset
+  split_ratio: [0.7, 0.1, 0.2]  # Train/cal/test split ratio
+  # VLM-specific adjustments for conformal prediction
+  apply_softmax: true  # Apply softmax to convert raw logits to probabilities
+  use_first_n_logits: 4  # Use only the first 4 logits (for A, B, C, D)
+  batch_size: 128  # Batch size for dataloaders
+  num_workers: 4  # Number of workers for dataloaders
+  # List of available VLM models
+  models: [
+    "Yi-VL-6B", 
+    "Qwen-VL-Chat", 
+    "mplug-owl2-llama2-7b", 
+    "Monkey-Chat", 
+    "Monkey", 
+    "MoE-LLaVA-Phi2-2.7B-4e", 
+    "llava-v1.6-vicuna-7b", 
+    "llava-v1.6-vicuna-13b", 
+    "llava-v1.6-34b", 
+    "internlm-xcomposer2-vl-7b", 
+    "cogagent-vqa-hf"
+  ]
+  # List of available VLM datasets
+  datasets: ["ai2d", "mmbench", "oodcv", "scienceqa", "seedbench"]
+
 # Model configurations
 model:
   architecture: resnet18  # Default for CIFAR-10
@@ -51,6 +79,7 @@ model_paths:
   cifar10: models/resnet18_cifar10_best.pth
   cifar100: models/vit_cifar100.pth
   imagenet: models/vit_imagenet.pth
+  vlm: null  # No model path needed for VLM (using precomputed logits)
 
 # Model-specific configurations
 model_configs:
@@ -65,6 +94,11 @@ model_configs:
     img_size: 224
     drop_path_rate: 0.1
     drop_rate: 0.1
+  vlm:
+    # VLM uses a dummy model since we're working with precomputed logits
+    use_dummy_model: true
+    # Conformal prediction settings for VLM
+    logit_processing: "softmax"  # How to process logits: "softmax", "normalize", or "raw"
 
 # Batch size for evaluation
 batch_size: 128
