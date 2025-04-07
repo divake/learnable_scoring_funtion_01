@@ -349,6 +349,89 @@ class ScoringFunctionTrainer:
             logging.info(f"Saved new best model for {dataset_name}")
         return best_loss
     
+    def _calculate_target_coverage_metrics(self, history, target_coverage=0.9, tolerance=0.02):
+        """
+        Calculate average set size and coverage for epochs where coverage is close to target.
+        
+        Args:
+            history: Training history dictionary
+            target_coverage: Target coverage (default: 0.9)
+            tolerance: Tolerance around target (default: 0.02, meaning 88-92% for target=0.9)
+            
+        Returns:
+            Dictionary with average metrics and number of qualifying epochs
+        """
+        qualifying_epochs = []
+        qualifying_coverages = []
+        qualifying_sizes = []
+        qualifying_auroc = []
+        qualifying_auarc = []
+        qualifying_ece = []
+        qualifying_tau = []
+        qualifying_efficiency = []
+        
+        # Find epochs where coverage is within tolerance of target
+        for i, coverage in enumerate(history['val_coverages']):
+            if abs(coverage - target_coverage) <= tolerance:
+                epoch_idx = i
+                qualifying_epochs.append(history['epochs'][epoch_idx])
+                qualifying_coverages.append(coverage)
+                qualifying_sizes.append(history['val_sizes'][epoch_idx])
+                
+                # Add additional metrics if available
+                if 'auroc_values' in history and len(history['auroc_values']) > epoch_idx:
+                    qualifying_auroc.append(history['auroc_values'][epoch_idx])
+                
+                if 'auarc_values' in history and len(history['auarc_values']) > epoch_idx:
+                    qualifying_auarc.append(history['auarc_values'][epoch_idx])
+                
+                if 'ece_values' in history and len(history['ece_values']) > epoch_idx:
+                    qualifying_ece.append(history['ece_values'][epoch_idx])
+                
+                if 'tau_values' in history and len(history['tau_values']) > epoch_idx:
+                    qualifying_tau.append(history['tau_values'][epoch_idx])
+                
+                # Calculate efficiency (coverage/size) for this epoch
+                efficiency = coverage / history['val_sizes'][epoch_idx]
+                qualifying_efficiency.append(efficiency)
+        
+        # Calculate averages if any qualifying epochs exist
+        if qualifying_epochs:
+            avg_coverage = sum(qualifying_coverages) / len(qualifying_coverages)
+            avg_size = sum(qualifying_sizes) / len(qualifying_sizes)
+            avg_efficiency = sum(qualifying_efficiency) / len(qualifying_efficiency)
+            
+            result = {
+                'avg_coverage': avg_coverage,
+                'avg_size': avg_size,
+                'avg_efficiency': avg_efficiency,
+                'num_epochs': len(qualifying_epochs),
+                'epochs': qualifying_epochs
+            }
+            
+            # Add averages for the additional metrics if available
+            if qualifying_auroc:
+                result['avg_auroc'] = sum(qualifying_auroc) / len(qualifying_auroc)
+            
+            if qualifying_auarc:
+                result['avg_auarc'] = sum(qualifying_auarc) / len(qualifying_auarc)
+            
+            if qualifying_ece:
+                result['avg_ece'] = sum(qualifying_ece) / len(qualifying_ece)
+            
+            if qualifying_tau:
+                result['avg_tau'] = sum(qualifying_tau) / len(qualifying_tau)
+            
+            return result
+        else:
+            return {
+                'avg_coverage': None,
+                'avg_size': None,
+                'avg_efficiency': None,
+                'num_epochs': 0,
+                'epochs': []
+            }
+    
     def train(self, num_epochs, target_coverage, tau_config, set_size_config, save_dir, plot_dir):
         """Main training loop"""
         # Cache base model outputs at the beginning
@@ -445,6 +528,42 @@ class ScoringFunctionTrainer:
             logging.info(f"  Coverage: {analysis['best_trade_off']['coverage']:.4f}")
             logging.info(f"  Set Size: {analysis['best_trade_off']['size']:.4f}")
             logging.info(f"  Efficiency: {analysis['best_trade_off']['trade_off']:.4f}")
+        
+        # Calculate and log metrics for epochs with coverage close to target
+        target_metrics = self._calculate_target_coverage_metrics(
+            history, 
+            target_coverage=target_coverage,
+            tolerance=0.02  # ±2% tolerance (88-92% for target=90%)
+        )
+        
+        if target_metrics['num_epochs'] > 0:
+            logging.info("\nMetrics for epochs with coverage within ±2% of target:")
+            logging.info(f"  Number of qualifying epochs: {target_metrics['num_epochs']}")
+            logging.info(f"  Average Coverage: {target_metrics['avg_coverage']:.4f}")
+            logging.info(f"  Average Set Size: {target_metrics['avg_size']:.4f}")
+            logging.info(f"  Average Efficiency: {target_metrics['avg_efficiency']:.4f}")
+            
+            # Log additional metrics if available
+            if 'avg_auroc' in target_metrics:
+                logging.info(f"  Average AUROC: {target_metrics['avg_auroc']:.4f}")
+            if 'avg_auarc' in target_metrics:
+                logging.info(f"  Average AUARC: {target_metrics['avg_auarc']:.4f}")
+            if 'avg_ece' in target_metrics:
+                logging.info(f"  Average ECE: {target_metrics['avg_ece']:.4f}")
+            if 'avg_tau' in target_metrics:
+                logging.info(f"  Average Tau: {target_metrics['avg_tau']:.4f}")
+                
+            logging.info(f"  Qualifying epochs: {target_metrics['epochs']}")
+        else:
+            logging.info("\nNo epochs had coverage within ±2% of target coverage.")
+            
+            # Find closest epoch to target coverage
+            closest_idx = min(range(len(history['val_coverages'])), 
+                             key=lambda i: abs(history['val_coverages'][i] - target_coverage))
+            
+            logging.info(f"Closest epoch to target coverage: {history['epochs'][closest_idx]}")
+            logging.info(f"  Coverage: {history['val_coverages'][closest_idx]:.4f}")
+            logging.info(f"  Set Size: {history['val_sizes'][closest_idx]:.4f}")
         
         logging.info("Training completed!")
     
