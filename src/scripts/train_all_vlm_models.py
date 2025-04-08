@@ -310,16 +310,17 @@ def collect_results(processes, process_status, output_dir):
         
         all_results.append(result)
         
-    # Save all results to file
-    results_file = os.path.join(output_dir, "all_model_results.json")
+    # Save dataset-specific results to file
+    dataset_name = processes[0]["dataset"] if processes else "unknown"
+    results_file = os.path.join(output_dir, f"{dataset_name}_model_results.json")
     with open(results_file, 'w') as f:
         json.dump(all_results, f, indent=2)
     
-    logging.info(f"Saved all results to {results_file}")
+    logging.info(f"Saved results for {dataset_name} to {results_file}")
     
     # Check overall success rate
     successful = sum(1 for r in all_results if r.get('success', False))
-    logging.info(f"Successfully extracted metrics for {successful}/{len(all_results)} models")
+    logging.info(f"Successfully extracted metrics for {successful}/{len(all_results)} models on {dataset_name}")
     
     return all_results
 
@@ -350,6 +351,10 @@ def plot_comparison(all_results, output_dir, dataset_name):
         'avg_tau': 'Average Tau Value',
     }
     
+    # Create dataset-specific subdirectory
+    dataset_dir = os.path.join(output_dir, dataset_name)
+    os.makedirs(dataset_dir, exist_ok=True)
+    
     for metric, title in metrics.items():
         if metric not in df_sorted.columns:
             continue
@@ -370,8 +375,39 @@ def plot_comparison(all_results, output_dir, dataset_name):
         plt.tight_layout()
         plt.grid(axis='y', linestyle='--', alpha=0.7)
         
-        # Save plot
+        # Save plot to dataset-specific directory
+        save_path = os.path.join(dataset_dir, f'comparison_{metric}.png')
+        plt.savefig(save_path, dpi=300)
+        plt.close()
+    
+    # Also save to main directory for backward compatibility
+    for metric, title in metrics.items():
+        if metric not in df_sorted.columns:
+            continue
+            
         save_path = os.path.join(output_dir, f'comparison_{metric}_{dataset_name}.png')
+        
+        # Check if we already have data
+        if os.path.exists(save_path):
+            logging.info(f"Skipping duplicate plot {save_path} (already generated)")
+            continue
+            
+        plt.figure(figsize=(12, 6))
+        bars = plt.bar(df_sorted['model'], df_sorted[metric])
+        
+        # Add value labels on top of bars
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2., height + 0.02,
+                    f'{height:.3f}', ha='center', va='bottom', rotation=0)
+        
+        plt.title(f'{title} Comparison Across Models - {dataset_name}')
+        plt.xlabel('VLM Model')
+        plt.ylabel(title)
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        
         plt.savefig(save_path, dpi=300)
         plt.close()
     
@@ -454,12 +490,21 @@ def generate_summary(df_sorted, output_dir, dataset_name):
     summary += "\nAll Models Performance:\n"
     summary += df_sorted.to_string(index=False, float_format=lambda x: f"{x:.3f}")
     
-    # Save summary to file
-    summary_file = os.path.join(output_dir, f'summary_{dataset_name}.txt')
+    # Create dataset-specific directory
+    dataset_dir = os.path.join(output_dir, dataset_name)
+    os.makedirs(dataset_dir, exist_ok=True)
+    
+    # Save summary to dataset-specific directory
+    summary_file = os.path.join(dataset_dir, 'summary.txt')
     with open(summary_file, 'w') as f:
         f.write(summary)
     
-    logging.info(f"Saved summary to {summary_file}")
+    # Also save to main directory for backward compatibility
+    main_summary_file = os.path.join(output_dir, f'summary_{dataset_name}.txt')
+    with open(main_summary_file, 'w') as f:
+        f.write(summary)
+    
+    logging.info(f"Saved summary to {summary_file} and {main_summary_file}")
     return summary
 
 
@@ -467,8 +512,8 @@ def main():
     parser = argparse.ArgumentParser(description='Train scoring function for all VLM models in parallel')
     parser.add_argument('--config', type=str, default='src/config/vlm.yaml',
                       help='Path to config file (default: src/config/vlm.yaml)')
-    parser.add_argument('--dataset', type=str, default='ai2d',
-                      help='Dataset to use (default: ai2d)')
+    parser.add_argument('--dataset', type=str, default=None,
+                      help='Dataset to use (default: all configured datasets)')
     parser.add_argument('--gpus', type=str, default='0',
                       help='Comma-separated list of GPU IDs to use (overrides config, default: 0)')
     parser.add_argument('--max_parallel', type=int, default=4,
@@ -476,9 +521,6 @@ def main():
     parser.add_argument('--output_dir', type=str, default='plots/vlm_all',
                       help='Directory to save comparison results (default: plots/vlm_all)')
     args = parser.parse_args()
-    
-    # Setup logging
-    log_file = setup_logging(args.dataset)
     
     # Load config to get models list and default GPU
     config_manager = ConfigManager(args.config)
@@ -504,76 +546,97 @@ def main():
     models = config['dataset']['models']
     logging.info(f"Found {len(models)} models to train: {models}")
     
+    # Get list of datasets to use
+    if args.dataset:
+        datasets = [args.dataset]  # Use the specified dataset
+    else:
+        # Use all supported datasets from config
+        datasets = config['dataset'].get('datasets', ['ai2d'])
+        # Default to ai2d if no datasets are configured
+        if not datasets:
+            datasets = ['ai2d']
+    
+    logging.info(f"Running training for datasets: {datasets}")
+    
     # Create output directory
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
     
-    # Limit parallel processes based on the number of GPUs and max_parallel setting
-    max_jobs = min(args.max_parallel, len(gpu_ids))
-    logging.info(f"Running up to {max_jobs} parallel jobs with {len(gpu_ids)} GPUs")
-    
-    # Start processes for each model in batches
-    all_processes = []
-    active_processes = []
-    
-    for i, model_name in enumerate(models):
-        # Use round-robin GPU assignment if multiple GPUs are available
-        gpu_id = gpu_ids[i % len(gpu_ids)] if len(gpu_ids) > 0 else None
+    # Train each dataset separately
+    for dataset_name in datasets:
+        logging.info(f"\n\n{'='*50}")
+        logging.info(f"STARTING TRAINING FOR DATASET: {dataset_name}")
+        logging.info(f"{'='*50}\n")
         
-        # Start the process
-        process_info = run_training_process(
-            model_name=model_name,
-            dataset_name=args.dataset,
-            config_path=args.config,
-            gpu_id=gpu_id
-        )
+        # Setup logging for this dataset
+        log_file = setup_logging(dataset_name)
         
-        all_processes.append(process_info)
-        active_processes.append(process_info)
+        # Limit parallel processes based on the number of GPUs and max_parallel setting
+        max_jobs = min(args.max_parallel, len(gpu_ids))
+        logging.info(f"Running up to {max_jobs} parallel jobs with {len(gpu_ids)} GPUs")
         
-        # Short delay to avoid race conditions when creating files
-        time.sleep(1)
+        # Start processes for each model in batches
+        all_processes = []
+        active_processes = []
         
-        # If we've reached the maximum number of parallel jobs,
-        # wait for some to complete before starting more
-        if len(active_processes) >= max_jobs and i < len(models) - 1:
-            logging.info(f"Reached max parallel jobs ({max_jobs}). Waiting for processes to complete...")
+        for i, model_name in enumerate(models):
+            # Use round-robin GPU assignment if multiple GPUs are available
+            gpu_id = gpu_ids[i % len(gpu_ids)] if len(gpu_ids) > 0 else None
             
-            # Wait for at least one process to complete
-            while True:
-                completed = [p for p in active_processes if p["process"].poll() is not None]
-                if completed:
-                    # At least one process completed
-                    for p in completed:
-                        active_processes.remove(p)
-                        exit_code = p["process"].returncode
-                        duration = time.time() - p["start_time"]
-                        if exit_code == 0:
-                            logging.info(f"✅ Process for {p['model']} completed successfully "
-                                        f"(Duration: {duration:.1f}s)")
-                        else:
-                            logging.error(f"❌ Process for {p['model']} failed with exit code {exit_code} "
-                                        f"(Duration: {duration:.1f}s)")
-                    break
+            # Start the process for this dataset
+            process_info = run_training_process(
+                model_name=model_name,
+                dataset_name=dataset_name,
+                config_path=args.config,
+                gpu_id=gpu_id
+            )
+            
+            all_processes.append(process_info)
+            active_processes.append(process_info)
+            
+            # Short delay to avoid race conditions when creating files
+            time.sleep(1)
+            
+            # If we've reached the maximum number of parallel jobs,
+            # wait for some to complete before starting more
+            if len(active_processes) >= max_jobs and i < len(models) - 1:
+                logging.info(f"Reached max parallel jobs ({max_jobs}). Waiting for processes to complete...")
                 
-                time.sleep(5)  # Check every 5 seconds
-    
-    # Monitor remaining processes until completion
-    process_status = monitor_processes(all_processes)
-    
-    # Collect results from all processes
-    all_results = collect_results(all_processes, process_status, output_dir)
-    
-    # Generate comparison plots
-    df_sorted = plot_comparison(all_results, output_dir, args.dataset)
-    
-    # Generate summary
-    summary = generate_summary(df_sorted, output_dir, args.dataset)
-    logging.info("\n" + summary)
+                # Wait for at least one process to complete
+                while True:
+                    completed = [p for p in active_processes if p["process"].poll() is not None]
+                    if completed:
+                        # At least one process completed
+                        for p in completed:
+                            active_processes.remove(p)
+                            exit_code = p["process"].returncode
+                            duration = time.time() - p["start_time"]
+                            if exit_code == 0:
+                                logging.info(f"✅ Process for {p['model']} completed successfully "
+                                            f"(Duration: {duration:.1f}s)")
+                            else:
+                                logging.error(f"❌ Process for {p['model']} failed with exit code {exit_code} "
+                                            f"(Duration: {duration:.1f}s)")
+                        break
+                    
+                    time.sleep(5)  # Check every 5 seconds
+        
+        # Monitor remaining processes until completion
+        process_status = monitor_processes(all_processes)
+        
+        # Collect results from all processes for this dataset
+        all_results = collect_results(all_processes, process_status, output_dir)
+        
+        # Generate comparison plots for this dataset
+        df_sorted = plot_comparison(all_results, output_dir, dataset_name)
+        
+        # Generate summary for this dataset
+        summary = generate_summary(df_sorted, output_dir, dataset_name)
+        logging.info("\n" + summary)
     
     # Complete
-    logging.info(f"All training completed!")
-    logging.info(f"Check {log_file} for logs and {output_dir} for results.")
+    logging.info(f"All training completed for all datasets!")
+    logging.info(f"Check the logs directory for logs and {output_dir} for results.")
 
 
 if __name__ == '__main__':
