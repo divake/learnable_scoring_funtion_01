@@ -1204,27 +1204,51 @@ def create_comparison_report(results: Dict[str, Dict[str, Dict[str, Any]]], outp
     rows = []
     
     for dataset, scorers in results.items():
-        # Handle special case for VLM with multiple models
+        # Handle special case for VLM with multiple models and datasets
         if dataset == 'vlm' and isinstance(scorers, dict):
             for model_name, model_results in scorers.items():
-                for scorer, metrics in model_results.items():
-                    if isinstance(metrics, dict) and "error" not in metrics:
-                        rows.append({
-                            'Dataset': f'vlm/{model_name}',
-                            'Scorer': scorer,
-                            'Empirical Coverage': metrics.get('empirical_coverage', 'N/A'),
-                            'Average Set Size': metrics.get('average_set_size', 'N/A'),
-                            'Median Set Size': metrics.get('median_set_size', 'N/A'),
-                            'Min Set Size': metrics.get('set_size_min', 'N/A'),
-                            'Max Set Size': metrics.get('set_size_max', 'N/A'),
-                            'AUROC': metrics.get('auroc', 'N/A')
-                        })
+                # Check if model_results is organized by dataset
+                if any(isinstance(v, dict) and not 'error' in v for v in model_results.values()):
+                    # New structure: model -> dataset -> scorer
+                    for dataset_name, dataset_results in model_results.items():
+                        for scorer, metrics in dataset_results.items():
+                            if isinstance(metrics, dict) and "error" not in metrics:
+                                rows.append({
+                                    'Dataset': f'vlm/{model_name}/{dataset_name}',
+                                    'Model': model_name,
+                                    'VLM Dataset': dataset_name,
+                                    'Scorer': scorer,
+                                    'Empirical Coverage': metrics.get('empirical_coverage', 'N/A'),
+                                    'Average Set Size': metrics.get('average_set_size', 'N/A'),
+                                    'Median Set Size': metrics.get('median_set_size', 'N/A'),
+                                    'Min Set Size': metrics.get('set_size_min', 'N/A'),
+                                    'Max Set Size': metrics.get('set_size_max', 'N/A'),
+                                    'AUROC': metrics.get('auroc', 'N/A')
+                                })
+                else:
+                    # Old structure: model -> scorer (for backward compatibility)
+                    for scorer, metrics in model_results.items():
+                        if isinstance(metrics, dict) and "error" not in metrics:
+                            rows.append({
+                                'Dataset': f'vlm/{model_name}',
+                                'Model': model_name,
+                                'VLM Dataset': 'ai2d',  # Assume ai2d for old structure
+                                'Scorer': scorer,
+                                'Empirical Coverage': metrics.get('empirical_coverage', 'N/A'),
+                                'Average Set Size': metrics.get('average_set_size', 'N/A'),
+                                'Median Set Size': metrics.get('median_set_size', 'N/A'),
+                                'Min Set Size': metrics.get('set_size_min', 'N/A'),
+                                'Max Set Size': metrics.get('set_size_max', 'N/A'),
+                                'AUROC': metrics.get('auroc', 'N/A')
+                            })
         else:
             # Standard datasets
             for scorer, metrics in scorers.items():
                 if isinstance(metrics, dict) and "error" not in metrics:
                     rows.append({
                         'Dataset': dataset,
+                        'Model': 'N/A',
+                        'VLM Dataset': 'N/A',
                         'Scorer': scorer,
                         'Empirical Coverage': metrics.get('empirical_coverage', 'N/A'),
                         'Average Set Size': metrics.get('average_set_size', 'N/A'),
@@ -1304,52 +1328,79 @@ def create_comparison_report(results: Dict[str, Dict[str, Dict[str, Any]]], outp
     
     # Create VLM-specific comparison if we have multiple VLM models
     try:
+        # Extract VLM-specific data
         vlm_df = df[df['Dataset'].str.contains('vlm/')]
-        if not vlm_df.empty and len(vlm_df['Dataset'].unique()) > 1:
+        
+        if not vlm_df.empty:
             logging.info("Creating VLM-specific comparison plots")
             
-            # VLM Average set size comparison
-            plt.figure(figsize=(14, 8))
-            ax = sns.barplot(x='Dataset', y='Average Set Size', hue='Scorer', data=vlm_df)
-            for container in ax.containers:
-                ax.bar_label(container, fmt='%.3f')
-            plt.title(f'VLM Models - Average Prediction Set Size Comparison (Target Coverage: {target_coverage:.2f})')
-            plt.legend(title='Scoring Function', bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.xticks(rotation=45)  # Rotate labels for better readability
-            plt.tight_layout()
-            vlm_avg_size_path = os.path.join(output_dir, 'vlm_average_set_size_comparison.png')
-            plt.savefig(vlm_avg_size_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            plots['vlm_average_set_size'] = vlm_avg_size_path
+            # Create model-specific comparisons across datasets and scoring functions
+            for scorer in vlm_df['Scorer'].unique():
+                scorer_df = vlm_df[vlm_df['Scorer'] == scorer]
+                
+                # Check if we have multiple datasets for any model
+                if len(scorer_df['VLM Dataset'].unique()) > 1:
+                    # Create dataset comparison plots for each model and scoring function
+                    plt.figure(figsize=(14, 8))
+                    ax = sns.barplot(x='Model', y='Average Set Size', hue='VLM Dataset', data=scorer_df)
+                    for container in ax.containers:
+                        ax.bar_label(container, fmt='%.3f')
+                    plt.title(f'VLM Dataset Comparison - Average Set Size with {scorer} scoring function')
+                    plt.legend(title='Dataset', bbox_to_anchor=(1.05, 1), loc='upper left')
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    model_avg_path = os.path.join(output_dir, f'vlm_{scorer}_datasets_avg_size.png')
+                    plt.savefig(model_avg_path, dpi=300, bbox_inches='tight')
+                    plt.close()
+                    plots[f'vlm_{scorer}_datasets_avg_size'] = model_avg_path
+                    
+                    # Coverage comparison
+                    plt.figure(figsize=(14, 8))
+                    ax = sns.barplot(x='Model', y='Empirical Coverage', hue='VLM Dataset', data=scorer_df)
+                    for container in ax.containers:
+                        ax.bar_label(container, fmt='%.3f')
+                    plt.axhline(y=target_coverage, color='r', linestyle='--', label=f'Target ({target_coverage:.2f})')
+                    plt.title(f'VLM Dataset Comparison - Coverage with {scorer} scoring function')
+                    plt.legend(title='Dataset', bbox_to_anchor=(1.05, 1), loc='upper left')
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    model_cov_path = os.path.join(output_dir, f'vlm_{scorer}_datasets_coverage.png')
+                    plt.savefig(model_cov_path, dpi=300, bbox_inches='tight')
+                    plt.close()
+                    plots[f'vlm_{scorer}_datasets_coverage'] = model_cov_path
             
-            # VLM Empirical coverage comparison
-            plt.figure(figsize=(14, 8))
-            ax = sns.barplot(x='Dataset', y='Empirical Coverage', hue='Scorer', data=vlm_df)
-            for container in ax.containers:
-                ax.bar_label(container, fmt='%.3f')
-            plt.title(f'VLM Models - Empirical Coverage Comparison (Target: {target_coverage:.2f})')
-            plt.axhline(y=target_coverage, color='r', linestyle='--', label=f'Target ({target_coverage:.2f})')
-            plt.legend(title='Scoring Function', bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.xticks(rotation=45)  # Rotate labels for better readability
-            plt.tight_layout()
-            vlm_coverage_path = os.path.join(output_dir, 'vlm_empirical_coverage_comparison.png')
-            plt.savefig(vlm_coverage_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            plots['vlm_empirical_coverage'] = vlm_coverage_path
-            
-            # VLM AUROC comparison
-            plt.figure(figsize=(14, 8))
-            ax = sns.barplot(x='Dataset', y='AUROC', hue='Scorer', data=vlm_df)
-            for container in ax.containers:
-                ax.bar_label(container, fmt='%.3f')
-            plt.title('VLM Models - AUROC Comparison (Higher is Better)')
-            plt.legend(title='Scoring Function', bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.xticks(rotation=45)  # Rotate labels for better readability
-            plt.tight_layout()
-            vlm_auroc_path = os.path.join(output_dir, 'vlm_auroc_comparison.png')
-            plt.savefig(vlm_auroc_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            plots['vlm_auroc'] = vlm_auroc_path
+            # For each VLM dataset, create model comparison plots
+            for dataset_name in vlm_df['VLM Dataset'].unique():
+                dataset_df = vlm_df[vlm_df['VLM Dataset'] == dataset_name]
+                
+                # Model comparison for average set size
+                plt.figure(figsize=(16, 10))
+                ax = sns.barplot(x='Model', y='Average Set Size', hue='Scorer', data=dataset_df)
+                for container in ax.containers:
+                    ax.bar_label(container, fmt='%.3f')
+                plt.title(f'VLM Models Comparison - {dataset_name} Dataset - Average Set Size')
+                plt.legend(title='Scoring Function', bbox_to_anchor=(1.05, 1), loc='upper left')
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                dataset_avg_path = os.path.join(output_dir, f'vlm_{dataset_name}_models_avg_size.png')
+                plt.savefig(dataset_avg_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                plots[f'vlm_{dataset_name}_models_avg_size'] = dataset_avg_path
+                
+                # Model comparison for empirical coverage
+                plt.figure(figsize=(16, 10))
+                ax = sns.barplot(x='Model', y='Empirical Coverage', hue='Scorer', data=dataset_df)
+                for container in ax.containers:
+                    ax.bar_label(container, fmt='%.3f')
+                plt.axhline(y=target_coverage, color='r', linestyle='--', label=f'Target ({target_coverage:.2f})')
+                plt.title(f'VLM Models Comparison - {dataset_name} Dataset - Empirical Coverage')
+                plt.legend(title='Scoring Function', bbox_to_anchor=(1.05, 1), loc='upper left')
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                dataset_cov_path = os.path.join(output_dir, f'vlm_{dataset_name}_models_coverage.png')
+                plt.savefig(dataset_cov_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                plots[f'vlm_{dataset_name}_models_coverage'] = dataset_cov_path
             
             # Save VLM-specific summary
             vlm_summary_path = os.path.join(output_dir, 'vlm_metrics_summary.csv')
@@ -1364,7 +1415,8 @@ def create_comparison_report(results: Dict[str, Dict[str, Dict[str, Any]]], outp
                 f.write(vlm_df.to_markdown(index=False))
             plots['vlm_markdown_summary'] = vlm_markdown_path
     except Exception as e:
-        logging.warning(f"Failed to create VLM-specific comparison plots: {str(e)}")
+        logging.error(f"Failed to create VLM-specific comparison plots: {str(e)}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
     
     return plots
 
@@ -1574,37 +1626,48 @@ def main():
     # Run evaluation for each dataset and scorer combination
     all_results = {}
     
-    # Special handling for VLM to iterate through models
+    # Special handling for VLM to iterate through models and datasets
     if 'vlm' in datasets and vlm_models:
-        # Setup VLM dataset directory for ai2d dataset
+        # Setup VLM dataset directory
         datasets.remove('vlm')  # Remove 'vlm' from standard processing
         all_results['vlm'] = {}
+        
+        # Get all available VLM datasets
+        vlm_datasets = config.get('vlm', {}).get('datasets', ['ai2d'])
+        logging.info(f"VLM datasets to process: {', '.join(vlm_datasets)}")
         
         for vlm_model in vlm_models:
             logging.info(f"=== Running evaluation for VLM model: {vlm_model} ===")
             
-            # Create a copy of the config to modify for this model
-            model_config = copy.deepcopy(config)
-            # Update the model name
-            model_config['vlm']['default_model'] = vlm_model
-            # Force ai2d dataset
-            model_config['vlm']['default_dataset'] = 'ai2d'
+            # Initialize model results dictionary
+            all_results['vlm'][vlm_model] = {}
             
-            # Run scorers for this model
-            model_results = {}
-            for scoring in scoring_functions:
-                try:
-                    # Add model name to logging for clarity
-                    logging.info(f"Running {scoring} evaluation for VLM model {vlm_model} on ai2d dataset")
-                    results = run_dataset(model_config, 'vlm', scoring)
-                    model_results[scoring] = results
-                except Exception as e:
-                    logging.error(f"Failed to run {scoring} evaluation for VLM model {vlm_model}: {str(e)}")
-                    logging.error(f"Traceback: {traceback.format_exc()}")
-                    model_results[scoring] = {"error": str(e)}
-            
-            # Store results for this model
-            all_results['vlm'][vlm_model] = model_results
+            # Process each VLM dataset
+            for vlm_dataset in vlm_datasets:
+                logging.info(f"=== Processing dataset: {vlm_dataset} for model: {vlm_model} ===")
+                
+                # Create a copy of the config to modify for this model and dataset
+                model_config = copy.deepcopy(config)
+                # Update the model name
+                model_config['vlm']['default_model'] = vlm_model
+                # Set the current dataset
+                model_config['vlm']['default_dataset'] = vlm_dataset
+                
+                # Run scorers for this model and dataset combination
+                dataset_results = {}
+                for scoring in scoring_functions:
+                    try:
+                        # Add model and dataset names to logging for clarity
+                        logging.info(f"Running {scoring} evaluation for VLM model {vlm_model} on {vlm_dataset} dataset")
+                        results = run_dataset(model_config, 'vlm', scoring)
+                        dataset_results[scoring] = results
+                    except Exception as e:
+                        logging.error(f"Failed to run {scoring} evaluation for VLM model {vlm_model} on {vlm_dataset}: {str(e)}")
+                        logging.error(f"Traceback: {traceback.format_exc()}")
+                        dataset_results[scoring] = {"error": str(e)}
+                
+                # Store results for this dataset
+                all_results['vlm'][vlm_model][vlm_dataset] = dataset_results
     
     if args.parallel and datasets:
         # Determine number of workers
@@ -1701,29 +1764,35 @@ def main():
                     
             logging.info(f"{dataset:<10} | {scoring:<10} | {coverage:<10} | {avg_size:<15} | {auroc:<10} | {status:<10}")
     
-    # Then, print VLM models
+    # Then, print VLM models - updated to include datasets
     if 'vlm' in all_results:
+        # Print header for VLM results
+        logging.info("\n=== VLM Models Evaluation Summary ===")
+        logging.info(f"{'Model/Dataset':<30} | {'Scoring':<10} | {'Coverage':<10} | {'Avg Set Size':<15} | {'AUROC':<10} | {'Status':<10}")
+        logging.info("-" * 95)
+        
         for model_name, model_results in all_results['vlm'].items():
-            for scoring, results in model_results.items():
-                if "error" in results:
-                    status = "ERROR"
-                    coverage = "N/A"
-                    avg_size = "N/A"
-                    auroc = "N/A"
-                else:
-                    status = "SUCCESS"
-                    coverage = results.get("empirical_coverage", "N/A")
-                    avg_size = results.get("average_set_size", "N/A")
-                    auroc = results.get("auroc", "N/A")
-                    
-                    if isinstance(coverage, float):
-                        coverage = f"{coverage:.4f}"
-                    if isinstance(avg_size, float):
-                        avg_size = f"{avg_size:.4f}"
-                    if isinstance(auroc, float):
-                        auroc = f"{auroc:.4f}"
+            for dataset_name, dataset_results in model_results.items():
+                for scoring, results in dataset_results.items():
+                    if "error" in results:
+                        status = "ERROR"
+                        coverage = "N/A"
+                        avg_size = "N/A"
+                        auroc = "N/A"
+                    else:
+                        status = "SUCCESS"
+                        coverage = results.get("empirical_coverage", "N/A")
+                        avg_size = results.get("average_set_size", "N/A")
+                        auroc = results.get("auroc", "N/A")
                         
-                logging.info(f"vlm/{model_name:<20} | {scoring:<10} | {coverage:<10} | {avg_size:<15} | {auroc:<10} | {status:<10}")
+                        if isinstance(coverage, float):
+                            coverage = f"{coverage:.4f}"
+                        if isinstance(avg_size, float):
+                            avg_size = f"{avg_size:.4f}"
+                        if isinstance(auroc, float):
+                            auroc = f"{auroc:.4f}"
+                            
+                    logging.info(f"{model_name}/{dataset_name:<30} | {scoring:<10} | {coverage:<10} | {avg_size:<15} | {auroc:<10} | {status:<10}")
     
     logging.info("All experiments completed!")
 
