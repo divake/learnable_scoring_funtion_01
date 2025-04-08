@@ -193,7 +193,7 @@ def collect_results(processes, process_status, output_dir):
             is_success = False
         
         # Check for specific training completion markers
-        if "Training completed!" in log_content and "Set Size:" in log_content:
+        if "Training completed!" in log_content and "Average Set Size:" in log_content:
             training_ran = True
         
         # If the process succeeded but didn't complete training, mark as failed
@@ -216,38 +216,93 @@ def collect_results(processes, process_status, output_dir):
             # Try to extract metrics
             metrics_found = False
             
-            # Extract metrics from the log file
+            # Extract metrics from the log file - looking for the averaged metrics
             try:
-                # Common metric patterns
-                metric_patterns = {
-                    "coverage": r"Coverage:\s+([\d\.]+)",
-                    "avg_set_size": r"Set Size:\s+([\d\.]+)",
-                    "auroc": r"AUROC:\s+([\d\.]+)",
-                    "auarc": r"AUARC:\s+([\d\.]+)",
-                    "ece": r"ECE:\s+([\d\.]+)",
-                    "tau": r"Tau:\s+([\d\.]+)"
-                }
+                # Look for the metrics section we added
+                avg_metrics_section = re.search(r"Metrics for epochs with coverage within ±2% of target:(.*?)(?:No epochs had coverage within|Training completed)", log_content, re.DOTALL)
                 
-                for metric_name, pattern in metric_patterns.items():
-                    match = re.search(pattern, log_content)
-                    if match:
-                        value = float(match.group(1))
-                        result[metric_name] = value
+                if avg_metrics_section:
+                    avg_section_text = avg_metrics_section.group(1)
+                    
+                    # Extract the averaged metrics
+                    metric_patterns = {
+                        "avg_coverage": r"Average Coverage:\s+([\d\.]+)",
+                        "avg_set_size": r"Average Set Size:\s+([\d\.]+)",
+                        "avg_auroc": r"Average AUROC:\s+([\d\.]+)",
+                        "avg_auarc": r"Average AUARC:\s+([\d\.]+)",
+                        "avg_ece": r"Average ECE:\s+([\d\.]+)",
+                        "avg_tau": r"Average Tau:\s+([\d\.]+)",
+                        "avg_efficiency": r"Average Efficiency:\s+([\d\.]+)"
+                    }
+                    
+                    for metric_name, pattern in metric_patterns.items():
+                        match = re.search(pattern, avg_section_text)
+                        if match:
+                            value = float(match.group(1))
+                            result[metric_name] = value
+                            metrics_found = True
+                
+                # If no avg metrics section found, look for "Closest epoch to target coverage" section
+                if not metrics_found:
+                    closest_section = re.search(r"Closest epoch to target coverage:.*?Coverage:\s+([\d\.]+).*?Set Size:\s+([\d\.]+)", log_content, re.DOTALL)
+                    if closest_section:
+                        coverage = float(closest_section.group(1))
+                        set_size = float(closest_section.group(2))
+                        result["avg_coverage"] = coverage
+                        result["avg_set_size"] = set_size
+                        
+                        # Calculate efficiency from these values
+                        if set_size > 0:
+                            result["avg_efficiency"] = coverage / set_size
+                        
                         metrics_found = True
                 
-                # Calculate efficiency if we have coverage and set_size
-                if "coverage" in result and "avg_set_size" in result and result["avg_set_size"] > 0:
-                    result["efficiency"] = result["coverage"] / result["avg_set_size"]
+                # If still no metrics, fall back to the older method
+                if not metrics_found:
+                    logging.warning(f"No averaged metrics found for {model_name}. Looking for standard metrics.")
                     
+                    # Legacy metric patterns
+                    legacy_patterns = {
+                        "coverage": r"Coverage:\s+([\d\.]+)",
+                        "avg_set_size": r"Set Size:\s+([\d\.]+)",
+                        "auroc": r"AUROC:\s+([\d\.]+)",
+                        "auarc": r"AUARC:\s+([\d\.]+)",
+                        "ece": r"ECE:\s+([\d\.]+)",
+                        "tau": r"Tau:\s+([\d\.]+)"
+                    }
+                    
+                    for metric_name, pattern in legacy_patterns.items():
+                        match = re.search(pattern, log_content)
+                        if match:
+                            value = float(match.group(1))
+                            # Convert the keys to match the new metric names
+                            if metric_name == "coverage":
+                                result["avg_coverage"] = value
+                            elif metric_name == "auroc":
+                                result["avg_auroc"] = value
+                            elif metric_name == "auarc":
+                                result["avg_auarc"] = value
+                            elif metric_name == "ece":
+                                result["avg_ece"] = value
+                            elif metric_name == "tau":
+                                result["avg_tau"] = value
+                            else:
+                                result[metric_name] = value
+                            metrics_found = True
+                    
+                    # Calculate efficiency if we have coverage and set_size
+                    if "avg_coverage" in result and "avg_set_size" in result and result["avg_set_size"] > 0:
+                        result["avg_efficiency"] = result["avg_coverage"] / result["avg_set_size"]
+                
                 if not metrics_found:
                     logging.warning(f"No metrics found in log for {model_name}")
                     result["success"] = False
                     result["error"] = "No metrics found in log"
                 else:
                     logging.info(f"Extracted metrics from log for {model_name}: " + 
-                                f"Coverage={result.get('coverage', 'N/A'):.3f}, " +
-                                f"Set Size={result.get('avg_set_size', 'N/A'):.3f}, " +
-                                f"AUROC={result.get('auroc', 'N/A'):.3f}")
+                                f"Avg Coverage={result.get('avg_coverage', 'N/A'):.3f}, " +
+                                f"Avg Set Size={result.get('avg_set_size', 'N/A'):.3f}, " +
+                                f"Avg AUROC={result.get('avg_auroc', 'N/A'):.3f}")
             except Exception as e:
                 logging.error(f"Error extracting metrics for {model_name}: {str(e)}")
                 result["success"] = False
@@ -287,11 +342,12 @@ def plot_comparison(all_results, output_dir, dataset_name):
     # Plot comparison metrics
     metrics = {
         'avg_set_size': 'Average Set Size',
-        'coverage': 'Coverage (target 90%)',
-        'auroc': 'AUROC Score',
-        'efficiency': 'Efficiency',
-        'auarc': 'AUARC Score',
-        'ece': 'ECE Score',
+        'avg_coverage': 'Average Coverage (target 90%)',
+        'avg_auroc': 'Average AUROC Score',
+        'avg_efficiency': 'Average Efficiency',
+        'avg_auarc': 'Average AUARC Score',
+        'avg_ece': 'Average ECE Score',
+        'avg_tau': 'Average Tau Value',
     }
     
     for metric, title in metrics.items():
@@ -341,25 +397,25 @@ def generate_summary(df_sorted, output_dir, dataset_name):
             'value': best_setsize['avg_set_size']
         }
     
-    if 'coverage' in df_sorted.columns:
-        best_coverage = df_sorted.loc[(df_sorted['coverage'] - target_coverage).abs().idxmin()]
+    if 'avg_coverage' in df_sorted.columns:
+        best_coverage = df_sorted.loc[(df_sorted['avg_coverage'] - target_coverage).abs().idxmin()]
         metrics_summary['best_coverage'] = {
             'model': best_coverage['model'],
-            'value': best_coverage['coverage']
+            'value': best_coverage['avg_coverage']
         }
     
-    if 'auroc' in df_sorted.columns:
-        best_auroc = df_sorted.loc[df_sorted['auroc'].idxmax()]
+    if 'avg_auroc' in df_sorted.columns:
+        best_auroc = df_sorted.loc[df_sorted['avg_auroc'].idxmax()]
         metrics_summary['best_auroc'] = {
             'model': best_auroc['model'],
-            'value': best_auroc['auroc']
+            'value': best_auroc['avg_auroc']
         }
         
-    if 'efficiency' in df_sorted.columns:
-        best_efficiency = df_sorted.loc[df_sorted['efficiency'].idxmax()]
+    if 'avg_efficiency' in df_sorted.columns:
+        best_efficiency = df_sorted.loc[df_sorted['avg_efficiency'].idxmax()]
         metrics_summary['best_efficiency'] = {
             'model': best_efficiency['model'],
-            'value': best_efficiency['efficiency']
+            'value': best_efficiency['avg_efficiency']
         }
     
     # Format summary text
@@ -370,29 +426,29 @@ def generate_summary(df_sorted, output_dir, dataset_name):
     if 'best_set_size' in metrics_summary:
         model = metrics_summary['best_set_size']['model']
         size = metrics_summary['best_set_size']['value']
-        coverage = df_sorted.loc[df_sorted['model'] == model, 'coverage'].values[0] if 'coverage' in df_sorted.columns else 'N/A'
-        auroc = df_sorted.loc[df_sorted['model'] == model, 'auroc'].values[0] if 'auroc' in df_sorted.columns else 'N/A'
+        coverage = df_sorted.loc[df_sorted['model'] == model, 'avg_coverage'].values[0] if 'avg_coverage' in df_sorted.columns else 'N/A'
+        auroc = df_sorted.loc[df_sorted['model'] == model, 'avg_auroc'].values[0] if 'avg_auroc' in df_sorted.columns else 'N/A'
         summary += f"1. Minimum Set Size: {model} (Size: {size:.3f}, Coverage: {coverage if isinstance(coverage, str) else coverage:.3f}, AUROC: {auroc if isinstance(auroc, str) else auroc:.3f})\n"
     
     if 'best_coverage' in metrics_summary:
         model = metrics_summary['best_coverage']['model']
         coverage = metrics_summary['best_coverage']['value']
         size = df_sorted.loc[df_sorted['model'] == model, 'avg_set_size'].values[0] if 'avg_set_size' in df_sorted.columns else 'N/A'
-        auroc = df_sorted.loc[df_sorted['model'] == model, 'auroc'].values[0] if 'auroc' in df_sorted.columns else 'N/A'
+        auroc = df_sorted.loc[df_sorted['model'] == model, 'avg_auroc'].values[0] if 'avg_auroc' in df_sorted.columns else 'N/A'
         summary += f"2. Closest to Target Coverage (90%): {model} (Coverage: {coverage:.3f}, Size: {size if isinstance(size, str) else size:.3f}, AUROC: {auroc if isinstance(auroc, str) else auroc:.3f})\n"
     
     if 'best_auroc' in metrics_summary:
         model = metrics_summary['best_auroc']['model']
         auroc = metrics_summary['best_auroc']['value']
         size = df_sorted.loc[df_sorted['model'] == model, 'avg_set_size'].values[0] if 'avg_set_size' in df_sorted.columns else 'N/A'
-        coverage = df_sorted.loc[df_sorted['model'] == model, 'coverage'].values[0] if 'coverage' in df_sorted.columns else 'N/A'
+        coverage = df_sorted.loc[df_sorted['model'] == model, 'avg_coverage'].values[0] if 'avg_coverage' in df_sorted.columns else 'N/A'
         summary += f"3. Best AUROC: {model} (AUROC: {auroc:.3f}, Size: {size if isinstance(size, str) else size:.3f}, Coverage: {coverage if isinstance(coverage, str) else coverage:.3f})\n"
     
     if 'best_efficiency' in metrics_summary:
         model = metrics_summary['best_efficiency']['model']
         efficiency = metrics_summary['best_efficiency']['value']
         size = df_sorted.loc[df_sorted['model'] == model, 'avg_set_size'].values[0] if 'avg_set_size' in df_sorted.columns else 'N/A'
-        coverage = df_sorted.loc[df_sorted['model'] == model, 'coverage'].values[0] if 'coverage' in df_sorted.columns else 'N/A'
+        coverage = df_sorted.loc[df_sorted['model'] == model, 'avg_coverage'].values[0] if 'avg_coverage' in df_sorted.columns else 'N/A'
         summary += f"4. Best Efficiency: {model} (Efficiency: {efficiency:.3f}, Size: {size if isinstance(size, str) else size:.3f}, Coverage: {coverage if isinstance(coverage, str) else coverage:.3f})\n"
     
     summary += "\nAll Models Performance:\n"
