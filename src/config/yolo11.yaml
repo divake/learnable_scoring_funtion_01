@@ -1,0 +1,94 @@
+# YOLO11 object detection scoring function configuration
+inherit: base_config.yaml
+
+# Device configuration
+device: 1  # Use first GPU (cuda:0)
+
+# Directory paths
+data_dir: /ssd_4TB/divake/learnable_scoring_funtion_01/cache/yolo11_cache  # Directory where YOLO11 cached outputs are stored
+base_dir: .     # Base directory for relative paths
+model_dir: models/yolo11  # Directory to save trained models
+
+# Dataset configurations
+dataset:
+  name: yolo11  # Dataset name
+  # Default dataset to use (COCO dataset)
+  default_dataset: "coco"
+  # Number of classes for classification
+  num_classes: 79  # COCO dataset has 79 active object classes
+  # Configure the split paths
+  splits:
+    train: "training"
+    validation: "validation"
+    calibration: "calibration"
+  # Configuration for object detection
+  detection:
+    conf_threshold: 0.25  # Confidence threshold for detections
+    iou_threshold: 0.45   # IoU threshold for NMS
+    match_threshold: 0.5  # IoU threshold for matching predictions with ground truth
+
+# Paths
+plot_dir: plots/yolo11
+log_dir: logs/yolo11
+
+# Training parameters
+num_epochs: 50
+batch_size: 128
+learning_rate: 0.001
+target_coverage: 0.9
+
+# Cache configuration - using pre-cached data
+cache:
+  enabled: true  # We're using pre-cached data
+  dir: /ssd_4TB/divake/learnable_scoring_funtion_01/cache/yolo11_cache
+
+# Training configuration
+training:
+  grad_clip:
+    enabled: true
+    max_norm: 0.5
+  loss_weights:
+    coverage: 2.0  # lambda1
+    size: 1.5      # lambda2
+    margin: 15    # margin loss weight
+
+# Optimizer configuration
+optimizer:
+  name: 'AdamW'
+  params:
+    lr: 0.001
+    weight_decay: 0.01
+  scheduler:
+    name: 'OneCycleLR'
+    params:
+      max_lr: 0.001
+      pct_start: 0.2
+      div_factor: 20
+      final_div_factor: 100
+      anneal_strategy: 'cos'
+
+# Model architecture for object detection scoring
+scoring_function:
+  hidden_dims: [128, 64]  # Network architecture
+  dropout: 0.2
+  l2_lambda: 0.1
+  activation:
+    name: 'LeakyReLU'
+    params:
+      negative_slope: 0.1
+  final_activation:
+    name: 'Softplus'  # Using Softplus since it's the supported final activation
+    params:
+      beta: 5  # Beta parameter for Softplus
+
+# Training constraints
+tau:
+  min: 0.1
+  max: 0.9
+  window_size: 5  # More stable tau
+
+# Set size constraints
+set_size:
+  target: 1
+  max: 3.0
+  margin: 20 
