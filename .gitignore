@@ -1,5 +1,6 @@
 .claude/
 .cursor/
+.vscode/
 cache/
 data/
 logs/
@@ -9,3 +10,7 @@ results/
 __pycache__/
 *.pyc
 *.log
+
+# Claude Code specific files
+CLAUDE.md
+.memory
