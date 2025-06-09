@@ -1,0 +1,20 @@
+{
+    "git.enableSmartCommit": true,
+    "git.autofetch": true,
+    "git.autofetchPeriod": 60,
+    "git.confirmSync": false,
+    "git.postCommitCommand": "sync",
+    "git.showPushSuccessNotification": true,
+    "git.pullBeforeCheckout": true,
+    "files.watcherExclude": {
+        "**/__pycache__/**": true,
+        "**/*.pyc": true,
+        "**/cache/**": true,
+        "**/data/**": true,
+        "**/logs/**": true,
+        "**/models/**": true,
+        "**/plots/**": true,
+        "**/results/**": true
+    },
+    "python.defaultInterpreterPath": "/home/divake/miniconda3/envs/env_cu121/bin/python"
+}
