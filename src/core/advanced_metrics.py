@@ -961,6 +961,66 @@ def save_metrics_to_csv(epochs: List[int],
     return file_path
 
 
+def calculate_conformal_metrics(y_true: np.ndarray, 
+                               scores: np.ndarray,
+                               base_probs: np.ndarray,
+                               tau: float) -> Dict[str, float]:
+    """
+    Calculate all metrics for conformal prediction in one function.
+    
+    This function properly handles the different semantics of scores vs probabilities
+    in conformal prediction methods.
+    
+    Args:
+        y_true: Ground truth labels
+        scores: Conformal scores (lower is better) of shape (n_samples, n_classes)
+        base_probs: Original probabilities from base model of shape (n_samples, n_classes)
+        tau: Current tau threshold for conformal prediction
+    
+    Returns:
+        Dictionary containing AUROC, AUARC, ECE, coverage, and average set size
+    """
+    # Handle tensor inputs
+    if isinstance(y_true, torch.Tensor):
+        y_true = y_true.cpu().numpy()
+    if isinstance(scores, torch.Tensor):
+        scores = scores.cpu().numpy()
+    if isinstance(base_probs, torch.Tensor):
+        base_probs = base_probs.cpu().numpy()
+    
+    # 1. AUROC - Use base model probabilities (already proper probabilities)
+    auroc = calculate_auroc(y_true, base_probs)
+    
+    # 2. AUARC - Use conformal scores with appropriate tau range
+    min_score = np.min(scores)
+    max_score = np.max(scores)
+    tau_values = np.linspace(min_score, max_score, 20)
+    auarc = calculate_auarc_from_scores(y_true, scores, tau_values)
+    
+    # 3. ECE - Use base model probabilities to measure calibration
+    ece = calculate_ece(y_true, base_probs)
+    
+    # 4. Coverage and set size at current tau
+    pred_sets = scores <= tau
+    set_sizes = np.sum(pred_sets, axis=1)
+    
+    # Calculate coverage
+    correct = 0
+    for i, label in enumerate(y_true):
+        if pred_sets[i, label]:
+            correct += 1
+    coverage = correct / len(y_true)
+    avg_set_size = np.mean(set_sizes)
+    
+    return {
+        'auroc': auroc,
+        'auarc': auarc,
+        'ece': ece,
+        'coverage': coverage,
+        'avg_set_size': avg_set_size
+    }
+
+
 if __name__ == "__main__":
     # This module is not meant to be run directly
     pass 

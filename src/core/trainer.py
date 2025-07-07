@@ -581,7 +581,7 @@ class ScoringFunctionTrainer:
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
                 
-                # Get scores for all classes using the appropriate method for cached/non-cached
+                # Get scores from our scoring function
                 scores, _, _ = self._compute_scores(inputs, targets)
                 
                 all_true_labels.extend(targets.cpu().numpy())
@@ -591,26 +591,84 @@ class ScoringFunctionTrainer:
         all_true_labels = np.array(all_true_labels)
         all_scores = np.concatenate(all_scores, axis=0)
         
-        # For AUROC, we need to convert scores (lower is better) to probabilities (higher is better)
-        # In conformal prediction, lower scores are better (included in prediction set if score <= tau)
-        all_probs = 1.0 - all_scores
+        # 1. AUROC for scoring function:
+        # We want to measure if the scoring function assigns lower scores to true classes
+        # Create binary labels: 1 for true class, 0 for false classes
+        n_samples, n_classes = all_scores.shape
+        binary_labels = np.zeros_like(all_scores)
+        for i in range(n_samples):
+            binary_labels[i, all_true_labels[i]] = 1
         
-        # Normalize probabilities to ensure they sum to 1.0 across classes for each sample
-        # This is required for multiclass ROC AUC calculation
-        row_sums = np.sum(all_probs, axis=1, keepdims=True)
-        all_probs_normalized = all_probs / row_sums
+        # Flatten for AUROC calculation
+        # Since lower scores are better in conformal prediction, we negate the scores
+        # so that AUROC calculation (which expects higher = better) works correctly
+        scores_flat = -all_scores.flatten()  # Negate so higher AUROC means better scoring
+        labels_flat = binary_labels.flatten()
         
-        # Calculate AUROC using one-vs-rest approach for multi-class
-        auroc = calculate_auroc(all_true_labels, all_probs_normalized)
+        # Calculate AUROC for the scoring function
+        from sklearn.metrics import roc_auc_score
+        auroc = roc_auc_score(labels_flat, scores_flat)
         
-        # Calculate AUARC using a range of tau values
-        tau_values = np.linspace(0, 1, 20)  # 20 threshold values from 0 to 1
+        # 2. AUARC - this is already correct, measuring scoring function performance
+        min_score = np.min(all_scores)
+        max_score = np.max(all_scores)
+        tau_values = np.linspace(min_score, max_score, 20)
         auarc = calculate_auarc_from_scores(all_true_labels, all_scores, tau_values)
         
-        # Calculate ECE
-        ece = calculate_ece(all_true_labels, all_probs_normalized)
+        # 3. ECE for conformal prediction:
+        # Measure calibration at different coverage levels
+        # This is different from traditional ECE
+        target_coverages = np.linspace(0.1, 0.99, 10)  # Test at different coverage levels
+        actual_coverages = []
+        
+        for target_cov in target_coverages:
+            # Find tau that should give this coverage on calibration set
+            tau_for_coverage = self._find_tau_for_coverage(target_cov)
+            
+            # Measure actual coverage on test set
+            pred_sets = all_scores <= tau_for_coverage
+            coverage = 0
+            for i, true_label in enumerate(all_true_labels):
+                if pred_sets[i, true_label]:
+                    coverage += 1
+            actual_coverages.append(coverage / len(all_true_labels))
+        
+        # ECE is the average absolute difference between target and actual coverage
+        ece = np.mean(np.abs(np.array(target_coverages) - np.array(actual_coverages)))
         
         return auroc, auarc, ece
+    
+    def _find_tau_for_coverage(self, target_coverage):
+        """Find tau threshold that gives target coverage on calibration set"""
+        self.scoring_fn.eval()
+        cal_scores = []
+        cal_labels = []
+        
+        with torch.no_grad():
+            for inputs, targets in self.cal_loader:
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+                
+                # Get scores from scoring function
+                scores, _, _ = self._compute_scores(inputs, targets)
+                
+                cal_scores.append(scores.cpu().numpy())
+                cal_labels.extend(targets.cpu().numpy())
+        
+        # Concatenate all scores
+        cal_scores = np.concatenate(cal_scores, axis=0)
+        cal_labels = np.array(cal_labels)
+        
+        # Extract true class scores
+        true_scores = []
+        for i, label in enumerate(cal_labels):
+            true_scores.append(cal_scores[i, label])
+        true_scores = np.array(true_scores)
+        
+        # Find tau at the target coverage quantile
+        tau = np.quantile(true_scores, target_coverage)
+        
+        return tau
     
     def _compute_scores(self, inputs, targets=None):
         """
