@@ -616,6 +616,9 @@ class ScoringFunctionTrainer:
         """
         Helper method to compute scores for inputs
         Modified to handle both raw inputs and cached probabilities
+        
+        The scoring function now takes the entire probability vector and outputs
+        a single score per sample.
         """
         # Inputs are already probabilities if using cached data
         if self.is_cached:
@@ -625,16 +628,21 @@ class ScoringFunctionTrainer:
                 logits = self.base_model(inputs)
                 probs = torch.softmax(logits, dim=1)
         
-        # Vectorized approach: reshape to process all probabilities at once
         batch_size, num_classes = probs.shape
-        flat_probs = probs.reshape(-1, 1)  # Reshape to (batch_size * num_classes, 1)
         
-        # Process all probabilities in a single forward pass
-        # When in eval mode, this won't compute stability_loss
-        flat_scores = self.scoring_fn(flat_probs)
+        # Pass entire probability vector to scoring function
+        # scoring_fn expects (batch_size, num_classes) and returns (batch_size,)
+        base_scores = self.scoring_fn(probs)  # Shape: (batch_size,)
         
-        # Reshape back to original dimensions
-        scores = flat_scores.reshape(batch_size, num_classes)
+        # Now we need to create a score for each class
+        # We'll use the base score and modulate it based on the probability
+        # Higher probability -> lower score (better for inclusion in prediction set)
+        scores = torch.zeros_like(probs)
+        
+        for i in range(batch_size):
+            # Use the learned base score and scale by (1 - probability)
+            # This maintains the conformal prediction property where lower scores are better
+            scores[i] = base_scores[i] * (1 - probs[i])
         
         if targets is not None:
             target_scores = scores[torch.arange(len(targets)), targets]

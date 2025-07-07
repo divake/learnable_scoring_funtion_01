@@ -103,6 +103,10 @@ class ConfigManager:
         """Allow dictionary-like access to config"""
         return self.config[key]
     
+    def __contains__(self, key):
+        """Allow 'in' operator to work with ConfigManager"""
+        return key in self.config
+    
     def get(self, key, default=None):
         """Safe dictionary-like access with default"""
         return self.config.get(key, default) 

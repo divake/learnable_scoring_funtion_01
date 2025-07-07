@@ -108,25 +108,133 @@ def plot_set_size_distribution(set_sizes, save_dir):
 
 def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
     """Plot the learned scoring function behavior."""
-    plotter = BasePlot()
+    plotter = BasePlot(figsize=(12, 8))
     plotter.setup()
     
-    # Create input range from 0 to 1
-    softmax_scores = torch.linspace(0, 1, 1000, device=device).reshape(-1, 1)
+    # Since the scoring function now takes the entire probability vector,
+    # we'll visualize how it behaves with different probability distributions
     
-    # Get non-conformity scores
+    # Get the expected number of classes from the scoring function
+    num_classes = scoring_fn.input_dim
+    
+    # Create probability distributions for visualization
+    n_points = 100
+    
+    if num_classes == 2:
+        # Simple 2-class visualization
+        probs_class0 = torch.linspace(0, 1, n_points, device=device)
+        probs_class1 = 1 - probs_class0
+        prob_vectors = torch.stack([probs_class0, probs_class1], dim=1)
+    else:
+        # For multi-class, create scenarios where one class dominates
+        prob_vectors = []
+        probs_class0 = torch.linspace(0, 1, n_points, device=device)
+        
+        for i in range(n_points):
+            # Create a probability vector where class 0 has probability probs_class0[i]
+            # and the remaining probability is distributed among other classes
+            prob_vec = torch.zeros(num_classes, device=device)
+            prob_vec[0] = probs_class0[i]
+            # Distribute remaining probability equally among other classes
+            remaining_prob = 1 - probs_class0[i]
+            if num_classes > 1:
+                prob_vec[1:] = remaining_prob / (num_classes - 1)
+            prob_vectors.append(prob_vec)
+        
+        prob_vectors = torch.stack(prob_vectors, dim=0)  # Shape: (n_points, num_classes)
+    
+    # Get base scores for these probability distributions
     with torch.no_grad():
-        nonconf_scores = scoring_fn(softmax_scores).cpu().numpy()
+        base_scores = scoring_fn(prob_vectors).cpu().numpy()
     
-    plt.plot(softmax_scores.cpu().numpy(), nonconf_scores)
-    plt.xlabel('Softmax Score')
-    plt.ylabel('Non-conformity Score')
-    plt.title('Learned Scoring Function Behavior')
+    # Calculate the actual scores for each class
+    probs_class0_np = probs_class0.cpu().numpy()
+    scores_class0 = base_scores * (1 - probs_class0_np)
+    
+    # For multi-class, also calculate score for the last class
+    if num_classes > 2:
+        probs_last = prob_vectors[:, -1].cpu().numpy()
+        scores_last = base_scores * (1 - probs_last)
+    else:
+        probs_class1_np = (1 - probs_class0_np)
+        scores_last = base_scores * (1 - probs_class1_np)
+    
+    # Plot 1: Base score vs probability of class 0
+    plt.subplot(2, 2, 1)
+    plt.plot(probs_class0_np, base_scores)
+    plt.xlabel('Probability of Class 0')
+    plt.ylabel('Base Score')
+    plt.title('Learned Base Score vs Class Probability')
     plt.grid(True)
     
-    # Add reference line y=1-x for comparison
-    ref_line = 1 - softmax_scores.cpu().numpy()
-    plt.plot(softmax_scores.cpu().numpy(), ref_line, '--', label='1-p (reference)')
+    # Plot 2: Actual scores for each class
+    plt.subplot(2, 2, 2)
+    plt.plot(probs_class0_np, scores_class0, label='Score for Class 0')
+    plt.plot(probs_class0_np, scores_last, label=f'Score for Class {num_classes-1}')
+    plt.xlabel('Probability of Class 0')
+    plt.ylabel('Non-conformity Score')
+    plt.title('Non-conformity Scores by Class')
     plt.legend()
+    plt.grid(True)
+    
+    # Plot 3: Compare with 1-p baseline
+    plt.subplot(2, 2, 3)
+    baseline_scores = 1 - probs_class0_np
+    plt.plot(probs_class0_np, scores_class0, label='Learned (Class 0)')
+    plt.plot(probs_class0_np, baseline_scores, '--', label='1-p baseline')
+    plt.xlabel('Probability of Class 0')
+    plt.ylabel('Non-conformity Score')
+    plt.title('Learned vs 1-p Baseline')
+    plt.legend()
+    plt.grid(True)
+    
+    # Plot 4: Heatmap for different probability scenarios
+    plt.subplot(2, 2, 4)
+    if num_classes >= 3:
+        # For multi-class, show how score varies with different distributions
+        n_grid = 20
+        scores_grid = np.zeros((n_grid, n_grid))
+        
+        for i in range(n_grid):
+            for j in range(n_grid):
+                p1 = i / (n_grid - 1)
+                p2 = j / (n_grid - 1) * (1 - p1)
+                p3 = 1 - p1 - p2
+                if p3 >= 0:  # Valid probability distribution
+                    # Create prob vector for current num_classes
+                    prob_vec = torch.zeros(1, num_classes, device=device, dtype=torch.float32)
+                    prob_vec[0, 0] = p1
+                    prob_vec[0, 1] = p2
+                    if num_classes > 3:
+                        # Distribute remaining prob among other classes
+                        prob_vec[0, 2:] = p3 / (num_classes - 2)
+                    else:
+                        prob_vec[0, 2] = p3
+                    
+                    with torch.no_grad():
+                        base_score = scoring_fn(prob_vec).cpu().item()
+                        # Score for class 0
+                        scores_grid[i, j] = base_score * (1 - p1)
+    else:
+        # For 2-class, create a simple heatmap
+        n_grid = 20
+        scores_grid = np.zeros((n_grid, n_grid))
+        for i in range(n_grid):
+            p0 = i / (n_grid - 1)
+            prob_vec = torch.tensor([[p0, 1-p0]], device=device, dtype=torch.float32)
+            with torch.no_grad():
+                base_score = scoring_fn(prob_vec).cpu().item()
+                scores_grid[i, :] = base_score * (1 - p0)
+    
+    plt.imshow(scores_grid, origin='lower', aspect='auto', cmap='viridis')
+    plt.colorbar(label='Score for Class 0')
+    if num_classes >= 3:
+        plt.xlabel('P(Class 1) / (1 - P(Class 0))')
+        plt.ylabel('P(Class 0)')
+        plt.title(f'Score Heatmap ({num_classes}-class scenario)')
+    else:
+        plt.xlabel('Sample Index')
+        plt.ylabel('P(Class 0)')
+        plt.title('Score Heatmap (2-class scenario)')
     
     plotter.save(plot_dir, 'scoring_function.png')
