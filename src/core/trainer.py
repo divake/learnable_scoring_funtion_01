@@ -672,11 +672,20 @@ class ScoringFunctionTrainer:
     
     def _compute_scores(self, inputs, targets=None):
         """
-        Helper method to compute scores for inputs
-        Modified to handle both raw inputs and cached probabilities
+        Compute non-conformity scores using the learnable scoring function.
         
-        The scoring function now takes the entire probability vector and outputs
-        a single score per sample.
+        The MLP takes probability vectors and directly outputs non-conformity scores
+        for each class. This is a purely data-driven approach without using any
+        static scoring functions like (1-p) or APS.
+        
+        Args:
+            inputs: Input data (images or cached probabilities)
+            targets: Ground truth labels (optional)
+            
+        Returns:
+            scores: Non-conformity scores for all classes (batch_size, num_classes)
+            target_scores: Scores for the true classes if targets provided
+            probs: Probability distributions from base model
         """
         # Inputs are already probabilities if using cached data
         if self.is_cached:
@@ -688,19 +697,10 @@ class ScoringFunctionTrainer:
         
         batch_size, num_classes = probs.shape
         
-        # Pass entire probability vector to scoring function
-        # scoring_fn expects (batch_size, num_classes) and returns (batch_size,)
-        base_scores = self.scoring_fn(probs)  # Shape: (batch_size,)
-        
-        # Now we need to create a score for each class
-        # We'll use the base score and modulate it based on the probability
-        # Higher probability -> lower score (better for inclusion in prediction set)
-        scores = torch.zeros_like(probs)
-        
-        for i in range(batch_size):
-            # Use the learned base score and scale by (1 - probability)
-            # This maintains the conformal prediction property where lower scores are better
-            scores[i] = base_scores[i] * (1 - probs[i])
+        # Pass probability vector to scoring function
+        # The MLP now directly outputs scores for each class
+        # No static scoring function like (1-p) is used!
+        scores = self.scoring_fn(probs)  # Shape: (batch_size, num_classes)
         
         if targets is not None:
             target_scores = scores[torch.arange(len(targets)), targets]

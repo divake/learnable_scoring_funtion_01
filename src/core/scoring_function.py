@@ -5,14 +5,14 @@ import torch.nn as nn
 
 
 class ScoringFunction(nn.Module):
-    def __init__(self, input_dim=None, hidden_dims=[64, 32], output_dim=1, config=None):
+    def __init__(self, input_dim=None, hidden_dims=[64, 32], output_dim=None, config=None):
         """
         Initialize scoring function
         
         Args:
             input_dim: Input dimension (number of classes). If None, will be taken from config
             hidden_dims: List of hidden layer dimensions
-            output_dim: Output dimension (default: 1)
+            output_dim: Output dimension (number of classes). If None, will be same as input_dim
             config: Configuration dictionary containing model parameters
         """
         super().__init__()
@@ -35,6 +35,11 @@ class ScoringFunction(nn.Module):
             input_dim = config_dict['dataset']['num_classes']
         
         self.input_dim = input_dim  # Store for later use
+        
+        # Output dimension should be same as input dimension (scores for each class)
+        if output_dim is None:
+            output_dim = input_dim
+        self.output_dim = output_dim
             
         def init_weights(m):
             if isinstance(m, nn.Linear):
@@ -111,7 +116,7 @@ class ScoringFunction(nn.Module):
             x: Input tensor of shape (batch_size, num_classes) containing probability vectors
             
         Returns:
-            scores: Output tensor of shape (batch_size,) containing a single score per sample
+            scores: Output tensor of shape (batch_size, num_classes) containing scores for each class
         """
         # Ensure input has correct shape
         if x.dim() == 1:
@@ -120,14 +125,15 @@ class ScoringFunction(nn.Module):
         if x.size(-1) != self.input_dim:
             raise ValueError(f"Expected input dimension {self.input_dim}, got {x.size(-1)}")
         
+        # Get scores for each class
         scores = self.network(x)
         
         # Add L2 regularization
         l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
         self.l2_reg = self.l2_lambda * l2_reg
         
-        # Force output to be reasonable
-        scores = torch.clamp(scores, min=0.01, max=1.0)
+        # Force output to be reasonable (scores should be non-negative)
+        scores = torch.clamp(scores, min=0.0)
         
         # Add stability term to encourage consistent behavior
         if self.training:
@@ -136,7 +142,7 @@ class ScoringFunction(nn.Module):
             # Ensure perturbed probabilities still sum to 1 (renormalize)
             perturbed_x = perturbed_x / perturbed_x.sum(dim=-1, keepdim=True)
             perturbed_scores = self.network(perturbed_x)
-            perturbed_scores = torch.clamp(perturbed_scores, min=0.01, max=1.0)
+            perturbed_scores = torch.clamp(perturbed_scores, min=0.0)
             
             # Stability loss encourages similar outputs for similar inputs
             self.stability_loss = self.stability_factor * torch.mean((scores - perturbed_scores)**2)
@@ -146,8 +152,5 @@ class ScoringFunction(nn.Module):
         else:
             self.stability_loss = 0.0
             self.separation_loss = 0.0
-        
-        # Ensure output is 1D
-        scores = scores.squeeze(-1)
         
         return scores

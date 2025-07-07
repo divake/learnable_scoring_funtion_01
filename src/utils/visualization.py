@@ -143,48 +143,44 @@ def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
         
         prob_vectors = torch.stack(prob_vectors, dim=0)  # Shape: (n_points, num_classes)
     
-    # Get base scores for these probability distributions
+    # Get scores for these probability distributions
     with torch.no_grad():
-        base_scores = scoring_fn(prob_vectors).cpu().numpy()
+        all_scores = scoring_fn(prob_vectors).cpu().numpy()  # Shape: (n_points, num_classes)
     
-    # Calculate the actual scores for each class
+    # Extract scores for specific classes
     probs_class0_np = probs_class0.cpu().numpy()
-    scores_class0 = base_scores * (1 - probs_class0_np)
+    scores_class0 = all_scores[:, 0]  # Scores for class 0
+    scores_last = all_scores[:, -1]   # Scores for last class
     
-    # For multi-class, also calculate score for the last class
-    if num_classes > 2:
-        probs_last = prob_vectors[:, -1].cpu().numpy()
-        scores_last = base_scores * (1 - probs_last)
-    else:
-        probs_class1_np = (1 - probs_class0_np)
-        scores_last = base_scores * (1 - probs_class1_np)
-    
-    # Plot 1: Base score vs probability of class 0
+    # Plot 1: Scores vs probability of class 0
     plt.subplot(2, 2, 1)
-    plt.plot(probs_class0_np, base_scores)
-    plt.xlabel('Probability of Class 0')
-    plt.ylabel('Base Score')
-    plt.title('Learned Base Score vs Class Probability')
-    plt.grid(True)
-    
-    # Plot 2: Actual scores for each class
-    plt.subplot(2, 2, 2)
     plt.plot(probs_class0_np, scores_class0, label='Score for Class 0')
     plt.plot(probs_class0_np, scores_last, label=f'Score for Class {num_classes-1}')
     plt.xlabel('Probability of Class 0')
     plt.ylabel('Non-conformity Score')
-    plt.title('Non-conformity Scores by Class')
+    plt.title('Learned Scores vs Class Probability')
     plt.legend()
     plt.grid(True)
     
-    # Plot 3: Compare with 1-p baseline
+    # Plot 2: Score differences
+    plt.subplot(2, 2, 2)
+    score_diff = scores_class0 - scores_last
+    plt.plot(probs_class0_np, score_diff)
+    plt.xlabel('Probability of Class 0')
+    plt.ylabel('Score Difference (Class 0 - Last Class)')
+    plt.title('Score Difference Between Classes')
+    plt.grid(True)
+    plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+    
+    # Plot 3: Compare with static baselines
     plt.subplot(2, 2, 3)
-    baseline_scores = 1 - probs_class0_np
-    plt.plot(probs_class0_np, scores_class0, label='Learned (Class 0)')
-    plt.plot(probs_class0_np, baseline_scores, '--', label='1-p baseline')
+    baseline_1p = 1 - probs_class0_np  # 1-p baseline for class 0
+    baseline_aps = 1 - probs_class0_np  # APS baseline (same as 1-p for this case)
+    plt.plot(probs_class0_np, scores_class0, label='Learned (Class 0)', linewidth=2)
+    plt.plot(probs_class0_np, baseline_1p, '--', label='1-p baseline', alpha=0.7)
     plt.xlabel('Probability of Class 0')
     plt.ylabel('Non-conformity Score')
-    plt.title('Learned vs 1-p Baseline')
+    plt.title('Learned vs Static Baselines')
     plt.legend()
     plt.grid(True)
     
@@ -212,9 +208,9 @@ def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
                         prob_vec[0, 2] = p3
                     
                     with torch.no_grad():
-                        base_score = scoring_fn(prob_vec).cpu().item()
+                        scores = scoring_fn(prob_vec).cpu().numpy()
                         # Score for class 0
-                        scores_grid[i, j] = base_score * (1 - p1)
+                        scores_grid[i, j] = scores[0, 0]
     else:
         # For 2-class, create a simple heatmap
         n_grid = 20
@@ -223,8 +219,8 @@ def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
             p0 = i / (n_grid - 1)
             prob_vec = torch.tensor([[p0, 1-p0]], device=device, dtype=torch.float32)
             with torch.no_grad():
-                base_score = scoring_fn(prob_vec).cpu().item()
-                scores_grid[i, :] = base_score * (1 - p0)
+                scores = scoring_fn(prob_vec).cpu().numpy()
+                scores_grid[i, :] = scores[0, 0]
     
     plt.imshow(scores_grid, origin='lower', aspect='auto', cmap='viridis')
     plt.colorbar(label='Score for Class 0')
