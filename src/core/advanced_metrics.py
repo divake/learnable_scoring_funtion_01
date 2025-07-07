@@ -3,11 +3,10 @@ Advanced metrics for evaluating conformal prediction models.
 
 This module provides functions to calculate and visualize:
 1. AUROC (Area Under the Receiver Operating Characteristic curve)
-2. AUARC (Area Under the Adaptive Risk Control curve)
-3. ECE (Expected Calibration Error)
+2. ECE (Expected Calibration Error)
 
 These metrics are particularly useful for evaluating conformal prediction models
-and understanding the trade-offs between error rates, prediction set sizes, and calibration.
+and understanding calibration quality.
 """
 
 import numpy as np
@@ -206,131 +205,6 @@ def calculate_auroc(y_true: np.ndarray, y_scores: np.ndarray,
                 raise ValueError(message) from e
 
 
-def calculate_auarc(prediction_sets: List[set], true_labels: np.ndarray, 
-                   set_sizes: np.ndarray) -> float:
-    """
-    Calculate the Area Under the Adaptive Risk Control curve (AUARC).
-    
-    In conformal prediction, this is the area under the curve of
-    error rate (1 - coverage) vs. average set size.
-    
-    Args:
-        prediction_sets: List of prediction sets (each set contains class indices)
-        true_labels: Ground truth labels
-        set_sizes: Size of each prediction set
-    
-    Returns:
-        AUARC score (lower is better)
-    """
-    # Handle different input types
-    if isinstance(true_labels, torch.Tensor):
-        true_labels = true_labels.cpu().numpy()
-    if isinstance(set_sizes, torch.Tensor):
-        set_sizes = set_sizes.cpu().numpy()
-    
-    # Calculate error rates for different set sizes
-    unique_sizes = np.sort(np.unique(set_sizes))
-    error_rates = []
-    avg_set_sizes = []
-    
-    for size in unique_sizes:
-        # Find samples with set size <= current size
-        mask = set_sizes <= size
-        if not np.any(mask):
-            continue
-            
-        # Calculate error rate for these samples (true label not in prediction set)
-        errors = 0
-        for i, label in enumerate(true_labels):
-            if mask[i] and label not in prediction_sets[i]:
-                errors += 1
-        
-        error_rate = errors / np.sum(mask)
-        avg_size = np.mean(set_sizes[mask])
-        
-        error_rates.append(error_rate)
-        avg_set_sizes.append(avg_size)
-    
-    # Ensure we have at least two points for AUC calculation
-    if len(error_rates) < 2:
-        return 0.0
-    
-    # Calculate AUC using the trapezoidal rule
-    # Note: We're calculating the area under the error rate vs. set size curve
-    auarc = np.trapz(error_rates, avg_set_sizes)
-    
-    # Normalize by the maximum possible set size to get a value between 0 and 1
-    # In conformal prediction, the maximum set size is the number of classes
-    max_possible_size = np.max(set_sizes)
-    if max_possible_size > 0:
-        auarc /= max_possible_size
-    
-    return auarc
-
-
-def calculate_auarc_from_scores(y_true: np.ndarray, y_scores: np.ndarray, 
-                               tau_values: np.ndarray) -> float:
-    """
-    Calculate AUARC from raw scores and tau thresholds.
-    
-    This is an alternative implementation that works directly with scores
-    rather than prediction sets.
-    
-    Args:
-        y_true: Ground truth labels
-        y_scores: Score matrix of shape (n_samples, n_classes)
-                 In conformal prediction, lower scores indicate higher confidence
-                 (included in prediction set if score <= tau)
-        tau_values: Array of tau thresholds to evaluate
-    
-    Returns:
-        AUARC score (lower is better)
-    """
-    # Handle different input types
-    if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
-    if isinstance(y_scores, torch.Tensor):
-        y_scores = y_scores.cpu().numpy()
-    if isinstance(tau_values, torch.Tensor):
-        tau_values = tau_values.cpu().numpy()
-    
-    error_rates = []
-    avg_set_sizes = []
-    
-    for tau in tau_values:
-        # Create prediction sets for this tau
-        pred_sets = y_scores <= tau
-        set_sizes = np.sum(pred_sets, axis=1)
-        
-        # Calculate error rate (true label not in prediction set)
-        correct = 0
-        for i, label in enumerate(y_true):
-            if pred_sets[i, label]:
-                correct += 1
-        
-        accuracy = correct / len(y_true)
-        error_rate = 1 - accuracy
-        avg_size = np.mean(set_sizes)
-        
-        error_rates.append(error_rate)
-        avg_set_sizes.append(avg_size)
-    
-    # Sort by set size for proper AUC calculation
-    sorted_indices = np.argsort(avg_set_sizes)
-    error_rates = np.array(error_rates)[sorted_indices]
-    avg_set_sizes = np.array(avg_set_sizes)[sorted_indices]
-    
-    # Calculate AUC
-    auarc = np.trapz(error_rates, avg_set_sizes)
-    
-    # Normalize by the maximum possible set size (number of classes)
-    max_possible_size = y_scores.shape[1]
-    if max_possible_size > 0:
-        auarc /= max_possible_size
-    
-    return auarc
-
-
 def calculate_ece(y_true: np.ndarray, y_probs: np.ndarray, n_bins: int = 10) -> float:
     """
     Calculate Expected Calibration Error (ECE).
@@ -525,70 +399,6 @@ def plot_roc_curve(y_true: np.ndarray, y_scores: np.ndarray,
     return ax
 
 
-def plot_auarc_curve(error_rates: List[float], set_sizes: List[float], 
-                    model_names: Optional[List[str]] = None,
-                    ax: Optional[plt.Axes] = None,
-                    title: str = "Error Rate vs. Set Size",
-                    log_scale: bool = False,
-                    save_path: Optional[str] = None) -> plt.Axes:
-    """
-    Plot the Error Rate vs. Set Size curve (for AUARC).
-    
-    Args:
-        error_rates: List of error rate arrays for each model
-        set_sizes: List of set size arrays for each model
-        model_names: Names of the models for the legend
-        ax: Matplotlib axes to plot on
-        title: Plot title
-        log_scale: Whether to use log scale for the x-axis
-        save_path: Path to save the plot
-    
-    Returns:
-        Matplotlib axes with the plot
-    """
-    if ax is None:
-        _, ax = plt.subplots(figsize=(8, 6))
-    
-    # Handle single model case
-    if not isinstance(error_rates[0], (list, np.ndarray)):
-        error_rates = [error_rates]
-        set_sizes = [set_sizes]
-        
-    if model_names is None:
-        model_names = [f"Model {i+1}" for i in range(len(error_rates))]
-    
-    for i, (errors, sizes) in enumerate(zip(error_rates, set_sizes)):
-        # Sort by set size
-        sorted_indices = np.argsort(sizes)
-        sorted_errors = np.array(errors)[sorted_indices]
-        sorted_sizes = np.array(sizes)[sorted_indices]
-        
-        # Calculate AUARC
-        auarc = np.trapz(sorted_errors, sorted_sizes)
-        max_size = np.max(sorted_sizes)
-        if max_size > 0:
-            auarc /= max_size
-        
-        ax.plot(sorted_sizes, sorted_errors, lw=2, 
-                label=f'{model_names[i]} (AUARC = {auarc:.3f})')
-    
-    ax.set_xlabel('Average Set Size')
-    ax.set_ylabel('Error Rate (1 - Coverage)')
-    ax.set_title(title)
-    
-    if log_scale:
-        ax.set_xscale('log')
-    
-    ax.legend(loc="upper right")
-    ax.grid(True, alpha=0.3)
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    
-    return ax
-
-
 def plot_reliability_diagram(y_true: np.ndarray, y_probs: np.ndarray, 
                             n_bins: int = 10,
                             model_names: Optional[List[str]] = None,
@@ -753,19 +563,17 @@ def plot_conformal_calibration(confidence_levels: np.ndarray, actual_coverages: 
 
 def plot_metrics_over_epochs(epochs: List[int], 
                             auroc_values: List[float], 
-                            auarc_values: List[float],
                             ece_values: Optional[List[float]] = None,
                             model_names: Optional[List[str]] = None,
                             title: str = "Metrics Over Training Epochs",
                             log_scale: bool = False,
                             save_path: Optional[str] = None) -> plt.Figure:
     """
-    Plot AUROC, AUARC, and ECE metrics over training epochs.
+    Plot AUROC and ECE metrics over training epochs.
     
     Args:
         epochs: List of epoch numbers
         auroc_values: List of AUROC values for each model over epochs
-        auarc_values: List of AUARC values for each model over epochs
         ece_values: Optional list of ECE values for each model over epochs
         model_names: Names of the models for the legend
         title: Plot title
@@ -775,25 +583,27 @@ def plot_metrics_over_epochs(epochs: List[int],
     Returns:
         Matplotlib figure with the plot
     """
-    n_plots = 3 if ece_values is not None else 2
+    n_plots = 2 if ece_values is not None else 1
     fig, axes = plt.subplots(1, n_plots, figsize=(n_plots * 8, 6))
+    
+    # Ensure axes is always a list
+    if n_plots == 1:
+        axes = [axes]
     
     # Handle single model case
     if not isinstance(auroc_values[0], (list, np.ndarray)):
         auroc_values = [auroc_values]
-        auarc_values = [auarc_values]
         if ece_values is not None:
             ece_values = [ece_values]
         
     if model_names is None:
         model_names = [f"Model {i+1}" for i in range(len(auroc_values))]
     
-    for i, (auroc, auarc) in enumerate(zip(auroc_values, auarc_values)):
+    for i, auroc in enumerate(auroc_values):
         axes[0].plot(epochs, auroc, lw=2, marker='o', label=model_names[i])
-        axes[1].plot(epochs, auarc, lw=2, marker='o', label=model_names[i])
         
         if ece_values is not None:
-            axes[2].plot(epochs, ece_values[i], lw=2, marker='o', label=model_names[i])
+            axes[1].plot(epochs, ece_values[i], lw=2, marker='o', label=model_names[i])
     
     # AUROC subplot
     axes[0].set_xlabel('Epoch')
@@ -804,24 +614,15 @@ def plot_metrics_over_epochs(epochs: List[int],
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
     
-    # AUARC subplot
-    axes[1].set_xlabel('Epoch')
-    axes[1].set_ylabel('AUARC (lower is better)')
-    axes[1].set_title('AUARC Over Epochs')
-    if log_scale:
-        axes[1].set_yscale('log')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-    
     # ECE subplot (if provided)
     if ece_values is not None:
-        axes[2].set_xlabel('Epoch')
-        axes[2].set_ylabel('ECE (lower is better)')
-        axes[2].set_title('ECE Over Epochs')
+        axes[1].set_xlabel('Epoch')
+        axes[1].set_ylabel('ECE (lower is better)')
+        axes[1].set_title('ECE Over Epochs')
         if log_scale:
-            axes[2].set_yscale('log')
-        axes[2].legend()
-        axes[2].grid(True, alpha=0.3)
+            axes[1].set_yscale('log')
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
     
     plt.suptitle(title)
     plt.tight_layout()
@@ -835,7 +636,6 @@ def plot_metrics_over_epochs(epochs: List[int],
 
 def analyze_epoch_metrics(epochs: List[int], 
                          auroc_values: List[float], 
-                         auarc_values: List[float],
                          ece_values: Optional[List[float]] = None,
                          coverage_values: Optional[List[float]] = None,
                          size_values: Optional[List[float]] = None) -> Dict[str, Any]:
@@ -845,7 +645,6 @@ def analyze_epoch_metrics(epochs: List[int],
     Args:
         epochs: List of epoch numbers
         auroc_values: List of AUROC values over epochs
-        auarc_values: List of AUARC values over epochs
         ece_values: Optional list of ECE values over epochs
         coverage_values: Optional list of coverage values over epochs
         size_values: Optional list of set size values over epochs
@@ -857,16 +656,10 @@ def analyze_epoch_metrics(epochs: List[int],
     
     # Find best epochs for each metric
     best_auroc_idx = np.argmax(auroc_values)
-    best_auarc_idx = np.argmin(auarc_values)  # Lower AUARC is better
     
     results['best_auroc'] = {
         'epoch': epochs[best_auroc_idx],
         'value': auroc_values[best_auroc_idx]
-    }
-    
-    results['best_auarc'] = {
-        'epoch': epochs[best_auarc_idx],
-        'value': auarc_values[best_auarc_idx]
     }
     
     # Add ECE analysis if provided
@@ -880,10 +673,8 @@ def analyze_epoch_metrics(epochs: List[int],
     # Calculate trends (improvement over epochs)
     if len(epochs) > 1:
         auroc_trend = (auroc_values[-1] - auroc_values[0]) / len(epochs)
-        auarc_trend = (auarc_values[-1] - auarc_values[0]) / len(epochs)
         
         results['auroc_trend'] = auroc_trend
-        results['auarc_trend'] = auarc_trend
         
         if ece_values is not None:
             ece_trend = (ece_values[-1] - ece_values[0]) / len(epochs)
@@ -907,7 +698,6 @@ def analyze_epoch_metrics(epochs: List[int],
 
 def save_metrics_to_csv(epochs: List[int], 
                        auroc_values: List[float], 
-                       auarc_values: List[float],
                        ece_values: Optional[List[float]] = None,
                        coverage_values: Optional[List[float]] = None,
                        size_values: Optional[List[float]] = None,
@@ -919,7 +709,6 @@ def save_metrics_to_csv(epochs: List[int],
     Args:
         epochs: List of epoch numbers
         auroc_values: List of AUROC values over epochs
-        auarc_values: List of AUARC values over epochs
         ece_values: Optional list of ECE values over epochs
         coverage_values: Optional list of coverage values over epochs
         size_values: Optional list of set size values over epochs
@@ -936,8 +725,7 @@ def save_metrics_to_csv(epochs: List[int],
     
     data = {
         'epoch': epochs,
-        'auroc': auroc_values,
-        'auarc': auarc_values
+        'auroc': auroc_values
     }
     
     if ece_values is not None:
@@ -978,7 +766,7 @@ def calculate_conformal_metrics(y_true: np.ndarray,
         tau: Current tau threshold for conformal prediction
     
     Returns:
-        Dictionary containing AUROC, AUARC, ECE, coverage, and average set size
+        Dictionary containing AUROC, ECE, coverage, and average set size
     """
     # Handle tensor inputs
     if isinstance(y_true, torch.Tensor):
@@ -991,13 +779,7 @@ def calculate_conformal_metrics(y_true: np.ndarray,
     # 1. AUROC - Use base model probabilities (already proper probabilities)
     auroc = calculate_auroc(y_true, base_probs)
     
-    # 2. AUARC - Use conformal scores with appropriate tau range
-    min_score = np.min(scores)
-    max_score = np.max(scores)
-    tau_values = np.linspace(min_score, max_score, 20)
-    auarc = calculate_auarc_from_scores(y_true, scores, tau_values)
-    
-    # 3. ECE - Use base model probabilities to measure calibration
+    # 2. ECE - Use base model probabilities to measure calibration
     ece = calculate_ece(y_true, base_probs)
     
     # 4. Coverage and set size at current tau
@@ -1014,7 +796,6 @@ def calculate_conformal_metrics(y_true: np.ndarray,
     
     return {
         'auroc': auroc,
-        'auarc': auarc,
         'ece': ece,
         'coverage': coverage,
         'avg_set_size': avg_set_size

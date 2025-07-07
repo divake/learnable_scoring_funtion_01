@@ -20,7 +20,6 @@ from src.utils.visualization import (
 from .metrics import AverageMeter, compute_tau
 from .advanced_metrics import (
     calculate_auroc,
-    calculate_auarc_from_scores,
     plot_metrics_over_epochs,
     save_metrics_to_csv,
     calculate_ece
@@ -292,12 +291,11 @@ class ScoringFunctionTrainer:
             'val_sizes': [],
             'tau_values': [],
             'auroc_values': [],
-            'auarc_values': [],
             'ece_values': []
         }
     
     def _log_metrics(self, epoch, num_epochs, current_lr, train_loss, train_coverage, 
-                     train_size, val_coverage, val_size, tau, auroc=None, auarc=None, ece=None):
+                     train_size, val_coverage, val_size, tau, auroc=None, ece=None):
         """Log training metrics"""
         logging.info(f"Epoch {epoch+1}/{num_epochs}")
         logging.info(f"Learning rate: {current_lr:.6f}")
@@ -310,13 +308,11 @@ class ScoringFunctionTrainer:
         
         if auroc is not None:
             logging.info(f"AUROC: {auroc:.4f}")
-        if auarc is not None:
-            logging.info(f"AUARC: {auarc:.4f}")
         if ece is not None:
             logging.info(f"ECE: {ece:.4f}")
     
     def _update_history(self, history, epoch, train_loss, train_coverage, train_size,
-                       val_coverage, val_size, tau, auroc=None, auarc=None, ece=None):
+                       val_coverage, val_size, tau, auroc=None, ece=None):
         """Update training history"""
         history['epochs'].append(epoch)
         history['train_losses'].append(train_loss)
@@ -328,8 +324,6 @@ class ScoringFunctionTrainer:
         
         if auroc is not None:
             history['auroc_values'].append(auroc)
-        if auarc is not None:
-            history['auarc_values'].append(auarc)
         if ece is not None:
             history['ece_values'].append(ece)
     
@@ -365,7 +359,6 @@ class ScoringFunctionTrainer:
         qualifying_coverages = []
         qualifying_sizes = []
         qualifying_auroc = []
-        qualifying_auarc = []
         qualifying_ece = []
         qualifying_tau = []
         qualifying_efficiency = []
@@ -381,9 +374,6 @@ class ScoringFunctionTrainer:
                 # Add additional metrics if available
                 if 'auroc_values' in history and len(history['auroc_values']) > epoch_idx:
                     qualifying_auroc.append(history['auroc_values'][epoch_idx])
-                
-                if 'auarc_values' in history and len(history['auarc_values']) > epoch_idx:
-                    qualifying_auarc.append(history['auarc_values'][epoch_idx])
                 
                 if 'ece_values' in history and len(history['ece_values']) > epoch_idx:
                     qualifying_ece.append(history['ece_values'][epoch_idx])
@@ -412,9 +402,6 @@ class ScoringFunctionTrainer:
             # Add averages for the additional metrics if available
             if qualifying_auroc:
                 result['avg_auroc'] = sum(qualifying_auroc) / len(qualifying_auroc)
-            
-            if qualifying_auarc:
-                result['avg_auarc'] = sum(qualifying_auarc) / len(qualifying_auarc)
             
             if qualifying_ece:
                 result['avg_ece'] = sum(qualifying_ece) / len(qualifying_ece)
@@ -466,8 +453,8 @@ class ScoringFunctionTrainer:
             # Evaluate
             val_coverage, val_size = self.evaluate(self.test_loader, tau)
             
-            # Calculate AUROC, AUARC, and ECE
-            auroc, auarc, ece = self._calculate_advanced_metrics(tau)
+            # Calculate AUROC and ECE
+            auroc, ece = self._calculate_advanced_metrics(tau)
             
             # Update scheduler
             scheduler.step()
@@ -475,13 +462,13 @@ class ScoringFunctionTrainer:
             # Log metrics
             self._log_metrics(
                 epoch, num_epochs, current_lr, train_loss, train_coverage,
-                train_size, val_coverage, val_size, tau, auroc, auarc, ece
+                train_size, val_coverage, val_size, tau, auroc, ece
             )
             
             # Update history
             self._update_history(
                 history, epoch, train_loss, train_coverage, train_size,
-                val_coverage, val_size, tau, auroc, auarc, ece
+                val_coverage, val_size, tau, auroc, ece
             )
             
             # Update plots
@@ -496,7 +483,6 @@ class ScoringFunctionTrainer:
         metrics_file = save_metrics_to_csv(
             epochs=history['epochs'],
             auroc_values=history['auroc_values'],
-            auarc_values=history['auarc_values'],
             ece_values=history['ece_values'],
             coverage_values=history['val_coverages'],
             size_values=history['val_sizes'],
@@ -510,7 +496,6 @@ class ScoringFunctionTrainer:
         analysis = analyze_epoch_metrics(
             epochs=history['epochs'],
             auroc_values=history['auroc_values'],
-            auarc_values=history['auarc_values'],
             ece_values=history['ece_values'],
             coverage_values=history['val_coverages'],
             size_values=history['val_sizes']
@@ -519,7 +504,6 @@ class ScoringFunctionTrainer:
         # Log analysis results
         logging.info("\nMetrics Analysis:")
         logging.info(f"Best AUROC: {analysis['best_auroc']['value']:.4f} at epoch {analysis['best_auroc']['epoch']}")
-        logging.info(f"Best AUARC: {analysis['best_auarc']['value']:.4f} at epoch {analysis['best_auarc']['epoch']}")
         if 'best_ece' in analysis:
             logging.info(f"Best ECE: {analysis['best_ece']['value']:.4f} at epoch {analysis['best_ece']['epoch']}")
         
@@ -546,8 +530,6 @@ class ScoringFunctionTrainer:
             # Log additional metrics if available
             if 'avg_auroc' in target_metrics:
                 logging.info(f"  Average AUROC: {target_metrics['avg_auroc']:.4f}")
-            if 'avg_auarc' in target_metrics:
-                logging.info(f"  Average AUARC: {target_metrics['avg_auarc']:.4f}")
             if 'avg_ece' in target_metrics:
                 logging.info(f"  Average ECE: {target_metrics['avg_ece']:.4f}")
             if 'avg_tau' in target_metrics:
@@ -568,7 +550,7 @@ class ScoringFunctionTrainer:
         logging.info("Training completed!")
     
     def _calculate_advanced_metrics(self, tau):
-        """Calculate AUROC, AUARC, and ECE metrics on the test set"""
+        """Calculate AUROC and ECE metrics on the test set"""
         self.scoring_fn.eval()
         if not self.is_cached and self.base_model is not None:
             self.base_model.eval()
@@ -609,13 +591,7 @@ class ScoringFunctionTrainer:
         from sklearn.metrics import roc_auc_score
         auroc = roc_auc_score(labels_flat, scores_flat)
         
-        # 2. AUARC - this is already correct, measuring scoring function performance
-        min_score = np.min(all_scores)
-        max_score = np.max(all_scores)
-        tau_values = np.linspace(min_score, max_score, 20)
-        auarc = calculate_auarc_from_scores(all_true_labels, all_scores, tau_values)
-        
-        # 3. ECE for conformal prediction:
+        # 2. ECE for conformal prediction:
         # Measure calibration at different coverage levels
         # This is different from traditional ECE
         target_coverages = np.linspace(0.1, 0.99, 10)  # Test at different coverage levels
@@ -636,7 +612,7 @@ class ScoringFunctionTrainer:
         # ECE is the average absolute difference between target and actual coverage
         ece = np.mean(np.abs(np.array(target_coverages) - np.array(actual_coverages)))
         
-        return auroc, auarc, ece
+        return auroc, ece
     
     def _find_tau_for_coverage(self, target_coverage):
         """Find tau threshold that gives target coverage on calibration set"""
@@ -921,16 +897,15 @@ class ScoringFunctionTrainer:
             plt.close()
     
     def _plot_advanced_metrics(self, history, plot_dir):
-        """Plot AUROC, AUARC, and ECE metrics over epochs"""
+        """Plot AUROC and ECE metrics over epochs"""
         if len(history['epochs']) < 2:
             return  # Need at least 2 epochs to plot
             
         plot_metrics_over_epochs(
             epochs=history['epochs'],
             auroc_values=history['auroc_values'],
-            auarc_values=history['auarc_values'],
             ece_values=history['ece_values'],
             model_names=[self.config['dataset']['name']],
-            title=f"AUROC, AUARC, and ECE Metrics for {self.config['dataset']['name']}",
-            save_path=os.path.join(plot_dir, 'auroc_auarc_metrics.png')
+            title=f"AUROC and ECE Metrics for {self.config['dataset']['name']}",
+            save_path=os.path.join(plot_dir, 'auroc_ece_metrics.png')
         )

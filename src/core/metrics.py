@@ -36,16 +36,8 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
                 logits = base_model(inputs)
                 probs = torch.softmax(logits, dim=1)
             
-            # New approach: scoring function takes full probability vector
-            batch_size, num_classes = probs.shape
-            
-            # Pass entire probability vector to scoring function
-            base_scores = scoring_fn(probs)  # Shape: (batch_size,)
-            
-            # Create scores for each class using the learned base score
-            scores = torch.zeros_like(probs)
-            for i in range(batch_size):
-                scores[i] = base_scores[i] * (1 - probs[i])
+            # New approach: scoring function outputs scores for all classes directly
+            scores = scoring_fn(probs)  # Shape: (batch_size, num_classes)
             
             # Extract only true class scores for tau calculation
             true_scores = scores[torch.arange(len(targets)), targets]
