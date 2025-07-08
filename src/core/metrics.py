@@ -62,7 +62,10 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
         end_idx = min(len(sorted_scores) - 1, idx + window_size // 2)  # Asymmetric window
         window_scores = sorted_scores[start_idx:end_idx+1]
         # Weight lower scores more to ensure coverage
-        weights = torch.linspace(1.5, 1.0, len(window_scores))
+        # Get smoothing weights from tau_config
+        weight_start = tau_config.get('smoothing_weights', {}).get('start', 1.5)
+        weight_end = tau_config.get('smoothing_weights', {}).get('end', 1.0)
+        weights = torch.linspace(weight_start, weight_end, len(window_scores))
         tau = (window_scores * weights).sum() / weights.sum()
     else:
         tau = sorted_scores[idx].item()

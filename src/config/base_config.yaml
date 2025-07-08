@@ -4,3 +4,24 @@
 base_dir: /ssd_4TB/divake/learnable_scoring_funtion_01
 data_dir: data
 model_dir: models
+
+# Default training dynamics (can be overridden in dataset-specific configs)
+training_dynamics:
+  stability_factor: 0.05  # Stability regularization strength
+  separation_factor: 0.5  # Separation loss weight
+  perturbation_noise: 0.01  # Noise level for stability checks
+  permutation_augmentation_prob: 0.5  # Probability of applying permutation during training
+  coverage_tolerance: 0.02  # Tolerance for coverage checks (±2%)
+  coverage_closeness_threshold: 0.01  # When coverage is "close enough"
+  coverage_deficit_threshold: 0.02  # When to boost coverage loss
+  size_penalty_boost: 1.5  # Boost factor for size penalty when coverage is good
+  coverage_boost: 2.0  # Boost factor for coverage loss when below target
+  xavier_init_gain: 0.5  # Gain for Xavier initialization
+  num_workers: 2  # DataLoader workers for cached data
+  ece_test_points: 10  # Number of points for ECE calculation
+
+# Default tau configuration
+tau:
+  smoothing_weights:
+    start: 1.5  # Start weight for tau smoothing
+    end: 1.0    # End weight for tau smoothing

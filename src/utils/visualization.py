@@ -88,7 +88,7 @@ def plot_score_distributions(true_scores, false_scores, tau, save_dir):
     
     plt.xlabel('Non-Conformity Score')
     plt.ylabel('Density/Frequency')
-    plt.title('Distribution of Conformity Scores')
+    plt.title('Distribution of Non-Conformity Scores')
     plt.legend()
     
     plotter.save(save_dir, 'score_distributions.png')
@@ -107,130 +107,107 @@ def plot_set_size_distribution(set_sizes, save_dir):
     plotter.save(save_dir, 'set_size_distribution.png')
 
 def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
-    """Plot the learned scoring function behavior."""
-    plotter = BasePlot(figsize=(12, 8))
+    """Plot the learned non-conformity scoring function behavior."""
+    plotter = BasePlot(figsize=(12, 10))
     plotter.setup()
     
-    # Since the scoring function now takes the entire probability vector,
-    # we'll visualize how it behaves with different probability distributions
+    # For a class-agnostic scoring function, we need to understand how it maps
+    # a probability value to a non-conformity score
+    
+    # Create a range of probability values
+    n_points = 1000
+    prob_values = torch.linspace(0.001, 0.999, n_points, device=device)
     
     # Get the expected number of classes from the scoring function
-    num_classes = scoring_fn.input_dim
+    num_classes = scoring_fn.num_classes if hasattr(scoring_fn, 'num_classes') else scoring_fn.input_dim
     
-    # Create probability distributions for visualization
-    n_points = 100
+    # Create probability vectors with varying confidence for one class
+    # while distributing the remaining probability uniformly
+    scores_list = []
     
-    if num_classes == 2:
-        # Simple 2-class visualization
-        probs_class0 = torch.linspace(0, 1, n_points, device=device)
-        probs_class1 = 1 - probs_class0
-        prob_vectors = torch.stack([probs_class0, probs_class1], dim=1)
-    else:
-        # For multi-class, create scenarios where one class dominates
-        prob_vectors = []
-        probs_class0 = torch.linspace(0, 1, n_points, device=device)
-        
-        for i in range(n_points):
-            # Create a probability vector where class 0 has probability probs_class0[i]
-            # and the remaining probability is distributed among other classes
-            prob_vec = torch.zeros(num_classes, device=device)
-            prob_vec[0] = probs_class0[i]
-            # Distribute remaining probability equally among other classes
-            remaining_prob = 1 - probs_class0[i]
-            if num_classes > 1:
-                prob_vec[1:] = remaining_prob / (num_classes - 1)
-            prob_vectors.append(prob_vec)
-        
-        prob_vectors = torch.stack(prob_vectors, dim=0)  # Shape: (n_points, num_classes)
-    
-    # Get scores for these probability distributions
     with torch.no_grad():
-        all_scores = scoring_fn(prob_vectors).cpu().numpy()  # Shape: (n_points, num_classes)
+        for p in prob_values:
+            # Create a probability vector where one class has probability p
+            # and the rest share the remaining probability equally
+            prob_vec = torch.ones(1, num_classes, device=device) * (1 - p) / (num_classes - 1)
+            prob_vec[0, 0] = p  # Set first class to have probability p
+            
+            # Get scores from the scoring function
+            scores = scoring_fn(prob_vec)
+            # Extract the score for the high-probability class
+            scores_list.append(scores[0, 0].cpu().item())
     
-    # Extract scores for specific classes
-    probs_class0_np = probs_class0.cpu().numpy()
-    scores_class0 = all_scores[:, 0]  # Scores for class 0
-    scores_last = all_scores[:, -1]   # Scores for last class
+    scores_array = np.array(scores_list)
+    prob_array = prob_values.cpu().numpy()
     
-    # Plot 1: Scores vs probability of class 0
+    # Plot 1: Main scoring function curve
     plt.subplot(2, 2, 1)
-    plt.plot(probs_class0_np, scores_class0, label='Score for Class 0')
-    plt.plot(probs_class0_np, scores_last, label=f'Score for Class {num_classes-1}')
-    plt.xlabel('Probability of Class 0')
+    plt.plot(prob_array, scores_array, 'b-', linewidth=2, label='Learned Scoring Function')
+    plt.plot(prob_array, 1 - prob_array, 'r--', linewidth=2, alpha=0.7, label='1-p (APS baseline)')
+    plt.xlabel('Probability')
     plt.ylabel('Non-conformity Score')
-    plt.title('Learned Scores vs Class Probability')
+    plt.title('Learned Non-conformity Scoring Function')
     plt.legend()
-    plt.grid(True)
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, 1)
+    plt.ylim(0, max(1, np.max(scores_array) * 1.1))
     
-    # Plot 2: Score differences
+    # Plot 2: Score difference from 1-p baseline
     plt.subplot(2, 2, 2)
-    score_diff = scores_class0 - scores_last
-    plt.plot(probs_class0_np, score_diff)
-    plt.xlabel('Probability of Class 0')
-    plt.ylabel('Score Difference (Class 0 - Last Class)')
-    plt.title('Score Difference Between Classes')
-    plt.grid(True)
-    plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+    difference = scores_array - (1 - prob_array)
+    plt.plot(prob_array, difference, 'g-', linewidth=2)
+    plt.axhline(y=0, color='k', linestyle='--', alpha=0.5)
+    plt.xlabel('Probability')
+    plt.ylabel('Score Difference from 1-p')
+    plt.title('Learned Function vs 1-p Baseline')
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, 1)
     
-    # Plot 3: Compare with static baselines
+    # Plot 3: Gradient/derivative of the scoring function
     plt.subplot(2, 2, 3)
-    baseline_1p = 1 - probs_class0_np  # 1-p baseline for class 0
-    baseline_aps = 1 - probs_class0_np  # APS baseline (same as 1-p for this case)
-    plt.plot(probs_class0_np, scores_class0, label='Learned (Class 0)', linewidth=2)
-    plt.plot(probs_class0_np, baseline_1p, '--', label='1-p baseline', alpha=0.7)
-    plt.xlabel('Probability of Class 0')
-    plt.ylabel('Non-conformity Score')
-    plt.title('Learned vs Static Baselines')
+    # Compute numerical gradient
+    gradient = np.gradient(scores_array, prob_array)
+    plt.plot(prob_array, gradient, 'purple', linewidth=2, label='Learned Function Gradient')
+    plt.axhline(y=-1, color='r', linestyle='--', alpha=0.7, label='1-p Gradient (-1)')
+    plt.xlabel('Probability')
+    plt.ylabel('Gradient (d(score)/d(prob))')
+    plt.title('Scoring Function Gradient')
     plt.legend()
-    plt.grid(True)
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, 1)
     
-    # Plot 4: Heatmap for different probability scenarios
+    # Plot 4: Class-agnostic verification
+    # Test if the function gives similar scores for the same probability
+    # regardless of which class has that probability
     plt.subplot(2, 2, 4)
-    if num_classes >= 3:
-        # For multi-class, show how score varies with different distributions
-        n_grid = 20
-        scores_grid = np.zeros((n_grid, n_grid))
-        
-        for i in range(n_grid):
-            for j in range(n_grid):
-                p1 = i / (n_grid - 1)
-                p2 = j / (n_grid - 1) * (1 - p1)
-                p3 = 1 - p1 - p2
-                if p3 >= 0:  # Valid probability distribution
-                    # Create prob vector for current num_classes
-                    prob_vec = torch.zeros(1, num_classes, device=device, dtype=torch.float32)
-                    prob_vec[0, 0] = p1
-                    prob_vec[0, 1] = p2
-                    if num_classes > 3:
-                        # Distribute remaining prob among other classes
-                        prob_vec[0, 2:] = p3 / (num_classes - 2)
-                    else:
-                        prob_vec[0, 2] = p3
-                    
-                    with torch.no_grad():
-                        scores = scoring_fn(prob_vec).cpu().numpy()
-                        # Score for class 0
-                        scores_grid[i, j] = scores[0, 0]
-    else:
-        # For 2-class, create a simple heatmap
-        n_grid = 20
-        scores_grid = np.zeros((n_grid, n_grid))
-        for i in range(n_grid):
-            p0 = i / (n_grid - 1)
-            prob_vec = torch.tensor([[p0, 1-p0]], device=device, dtype=torch.float32)
-            with torch.no_grad():
-                scores = scoring_fn(prob_vec).cpu().numpy()
-                scores_grid[i, :] = scores[0, 0]
     
-    plt.imshow(scores_grid, origin='lower', aspect='auto', cmap='viridis')
-    plt.colorbar(label='Score for Class 0')
-    if num_classes >= 3:
-        plt.xlabel('P(Class 1) / (1 - P(Class 0))')
-        plt.ylabel('P(Class 0)')
-        plt.title(f'Score Heatmap ({num_classes}-class scenario)')
-    else:
-        plt.xlabel('Sample Index')
-        plt.ylabel('P(Class 0)')
-        plt.title('Score Heatmap (2-class scenario)')
+    # Test with a few specific probability values
+    test_probs = [0.1, 0.3, 0.5, 0.7, 0.9]
+    class_indices = [0, num_classes//2, num_classes-1] if num_classes > 2 else [0, 1]
+    
+    for class_idx in class_indices:
+        scores_for_class = []
+        
+        with torch.no_grad():
+            for p in test_probs:
+                # Create probability vector with class_idx having probability p
+                prob_vec = torch.ones(1, num_classes, device=device) * (1 - p) / (num_classes - 1)
+                prob_vec[0, class_idx] = p
+                
+                scores = scoring_fn(prob_vec)
+                scores_for_class.append(scores[0, class_idx].cpu().item())
+        
+        plt.plot(test_probs, scores_for_class, 'o-', 
+                label=f'Class {class_idx}', markersize=8, linewidth=2)
+    
+    plt.xlabel('Probability')
+    plt.ylabel('Non-conformity Score')
+    plt.title('Class-Agnostic Behavior Verification')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, 1)
+    
+    # Add overall title
+    plt.suptitle('Learned Non-conformity Scoring Function Analysis', fontsize=16)
     
     plotter.save(plot_dir, 'scoring_function.png')

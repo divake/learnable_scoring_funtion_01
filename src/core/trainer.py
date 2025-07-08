@@ -268,7 +268,7 @@ class ScoringFunctionTrainer:
                 dataset,
                 batch_size=self.config['batch_size'],
                 shuffle=shuffle,
-                num_workers=2,  # Reduced workers since data is smaller
+                num_workers=self.config.get('training_dynamics', {}).get('num_workers', 2),  # Configurable workers
                 pin_memory=True
             )
         
@@ -343,7 +343,9 @@ class ScoringFunctionTrainer:
             logging.info(f"Saved new best model for {dataset_name}")
         return best_loss
     
-    def _calculate_target_coverage_metrics(self, history, target_coverage=0.9, tolerance=0.02):
+    def _calculate_target_coverage_metrics(self, history, target_coverage=0.9, tolerance=None):
+        if tolerance is None:
+            tolerance = self.config.get('training_dynamics', {}).get('coverage_tolerance', 0.02)
         """
         Calculate average set size and coverage for epochs where coverage is close to target.
         
@@ -419,6 +421,44 @@ class ScoringFunctionTrainer:
                 'epochs': []
             }
     
+    def _check_class_agnostic_behavior(self):
+        """Debug function to verify class-agnostic behavior"""
+        self.scoring_fn.eval()
+        
+        # Create synthetic probability vectors to test symmetry
+        test_probs = torch.tensor([
+            [0.7, 0.2, 0.1],  # High confidence for class 0
+            [0.2, 0.7, 0.1],  # Same pattern but for class 1
+            [0.1, 0.2, 0.7],  # Same pattern but for class 2
+        ], device=self.device)
+        
+        # Pad with zeros if we have more than 3 classes
+        if self.scoring_fn.num_classes > 3:
+            padding = torch.zeros(3, self.scoring_fn.num_classes - 3, device=self.device)
+            test_probs = torch.cat([test_probs, padding], dim=1)
+        
+        with torch.no_grad():
+            scores = self.scoring_fn(test_probs)
+        
+        # Check if scores follow the same pattern
+        logging.info("=== Class-agnostic behavior check ===")
+        logging.info(f"Prob vector 1 (high class 0): {test_probs[0][:3].cpu().numpy()}")
+        logging.info(f"Scores: {scores[0][:3].cpu().numpy()}")
+        logging.info(f"Prob vector 2 (high class 1): {test_probs[1][:3].cpu().numpy()}")
+        logging.info(f"Scores: {scores[1][:3].cpu().numpy()}")
+        logging.info(f"Prob vector 3 (high class 2): {test_probs[2][:3].cpu().numpy()}")
+        logging.info(f"Scores: {scores[2][:3].cpu().numpy()}")
+        
+        # Check if the scores for high probability class are similar
+        high_prob_scores = [scores[0, 0], scores[1, 1], scores[2, 2]]
+        low_prob_scores = [scores[0, 2], scores[1, 0], scores[2, 1]]
+        
+        logging.info(f"High prob (0.7) scores: {[s.item() for s in high_prob_scores]}")
+        logging.info(f"Low prob (0.1) scores: {[s.item() for s in low_prob_scores]}")
+        logging.info("=====================================")
+        
+        self.scoring_fn.train()
+    
     def train(self, num_epochs, target_coverage, tau_config, set_size_config, save_dir, plot_dir):
         """Main training loop"""
         # Cache base model outputs at the beginning
@@ -474,6 +514,10 @@ class ScoringFunctionTrainer:
             # Update plots
             self._update_plots(history, tau, save_dir, plot_dir)
             
+            # Check class-agnostic behavior every 5 epochs
+            if epoch % 5 == 0:
+                self._check_class_agnostic_behavior()
+            
             # Save best model
             best_loss = self._save_model(
                 train_loss, best_loss, train_size, set_size_config, save_dir
@@ -517,7 +561,7 @@ class ScoringFunctionTrainer:
         target_metrics = self._calculate_target_coverage_metrics(
             history, 
             target_coverage=target_coverage,
-            tolerance=0.02  # ±2% tolerance (88-92% for target=90%)
+            tolerance=self.config.get('training_dynamics', {}).get('coverage_tolerance', 0.02)  # Configurable tolerance
         )
         
         if target_metrics['num_epochs'] > 0:
@@ -594,7 +638,8 @@ class ScoringFunctionTrainer:
         # 2. ECE for conformal prediction:
         # Measure calibration at different coverage levels
         # This is different from traditional ECE
-        target_coverages = np.linspace(0.1, 0.99, 10)  # Test at different coverage levels
+        num_points = self.config.get('training_dynamics', {}).get('ece_test_points', 10)
+        target_coverages = np.linspace(0.1, 0.99, num_points)  # Configurable test points
         actual_coverages = []
         
         for target_cov in target_coverages:
@@ -684,7 +729,7 @@ class ScoringFunctionTrainer:
         return scores, None, probs
 
     def train_epoch(self, optimizer, tau, tau_config, set_size_config):
-        """Train for one epoch"""
+        """Train for one epoch with permutation augmentation for class-agnostic learning"""
         self.scoring_fn.train()
         loss_meter = AverageMeter()
         coverage_meter = AverageMeter()
@@ -696,11 +741,45 @@ class ScoringFunctionTrainer:
         # Get target coverage from config
         target_coverage = self.config['target_coverage']
         
+        # Track permutation effectiveness (for debugging)
+        perm_count = 0
+        
         pbar = tqdm(self.train_loader, desc='Training')
         for inputs, targets in pbar:
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
             batch_size = inputs.size(0)
+            
+            # Permutation augmentation for class-agnostic learning
+            # This ensures the model treats all classes equally
+            perm_prob = self.config.get('training_dynamics', {}).get('permutation_augmentation_prob', 0.5)
+            use_permutation = torch.rand(1).item() < perm_prob  # Configurable permutation probability
+            if use_permutation:
+                perm_count += 1
+                # Generate random permutation for each sample in batch
+                # This allows different permutations within the same batch
+                permuted_inputs = []
+                permuted_targets = []
+                
+                for i in range(batch_size):
+                    perm = torch.randperm(self.scoring_fn.num_classes, device=self.device)
+                    # Permute the probability vector
+                    if self.is_cached:
+                        # If using cached probabilities
+                        permuted_input = inputs[i][perm]
+                    else:
+                        # If using raw inputs, we need to get probabilities first
+                        with torch.no_grad():
+                            logits = self.base_model(inputs[i:i+1])
+                            probs = torch.softmax(logits, dim=1)
+                            permuted_input = probs[0][perm]
+                    
+                    permuted_inputs.append(permuted_input)
+                    # Update target to new position
+                    permuted_targets.append((perm == targets[i]).nonzero(as_tuple=True)[0].item())
+                
+                inputs = torch.stack(permuted_inputs) if self.is_cached else inputs
+                targets = torch.tensor(permuted_targets, device=self.device, dtype=targets.dtype)
             
             scores, target_scores, _ = self._compute_scores(inputs, targets)
             
@@ -742,16 +821,22 @@ class ScoringFunctionTrainer:
             else:
                 separation_loss = 0.0
             
+            # Get dynamic training parameters
+            dynamics = self.config.get('training_dynamics', {})
+            
             # Dynamically adjust coverage weight if below target
             coverage_boost = 1.0
             size_boost = 1.0
             
+            closeness_threshold = dynamics.get('coverage_closeness_threshold', 0.01)
+            deficit_threshold = dynamics.get('coverage_deficit_threshold', 0.02)
+            
             # If coverage is good (close to target), boost size weight
-            if abs(coverage.item() - target_coverage) < 0.01:  # Within 1% of target
-                size_boost = 1.5  # Boost size weight moderately
+            if abs(coverage.item() - target_coverage) < closeness_threshold:
+                size_boost = dynamics.get('size_penalty_boost', 1.5)  # Configurable boost
             # If coverage is too low, prioritize coverage
-            elif coverage.item() < target_coverage - 0.02:  # If more than 2% below target
-                coverage_boost = 2.0  # Boost coverage weight
+            elif coverage.item() < target_coverage - deficit_threshold:
+                coverage_boost = dynamics.get('coverage_boost', 2.0)  # Configurable boost
             
             # Combined loss with dynamic weights
             loss = (
@@ -794,6 +879,10 @@ class ScoringFunctionTrainer:
                 'Coverage': f'{coverage_meter.avg:.3f}',
                 'Size': f'{size_meter.avg:.3f}'
             })
+        
+        # Debug: Print permutation usage
+        total_batches = len(self.train_loader)
+        logging.info(f"Permutation augmentation used in {perm_count}/{total_batches} batches ({perm_count/total_batches*100:.1f}%)")
         
         return loss_meter.avg, coverage_meter.avg, size_meter.avg
     

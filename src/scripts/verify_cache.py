@@ -53,13 +53,14 @@ def main():
     logging.info("Base model loaded successfully")
     
     # Initialize scoring function
+    # input_dim will be automatically taken from config['dataset']['num_classes']
     scoring_fn = ScoringFunction(
-        input_dim=1,
+        input_dim=None,  # Will be taken from config
         hidden_dims=config['scoring_function']['hidden_dims'],
-        output_dim=1,
+        output_dim=None,  # Will default to num_classes (same as input_dim)
         config=config
     ).to(config['device'])
-    logging.info("Scoring function initialized")
+    logging.info(f"Scoring function initialized with input_dim={config['dataset']['num_classes']}, output_dim={config['dataset']['num_classes']}")
     
     # Initialize trainer
     trainer = ScoringFunctionTrainer(
