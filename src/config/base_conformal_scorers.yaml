@@ -120,6 +120,14 @@ scoring_functions:
   Sparsemax:
     delta: 0.15  # Threshold parameter for controlling sparsity
 
+# Empty prediction set handling
+# Options: 
+#   - 'keep_empty': Keep empty sets as is (most honest, 0% coverage for those samples)
+#   - 'add_most_likely': Add the most likely class (maintains some coverage)
+#   - 'add_top_k': Add top-k most likely classes (specify k with empty_set_top_k)
+empty_set_handling: 'keep_empty'
+empty_set_top_k: 3  # Only used when empty_set_handling is 'add_top_k'
+
 # Logging settings
 logging:
   level: INFO

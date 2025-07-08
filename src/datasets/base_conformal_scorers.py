@@ -28,6 +28,7 @@ import random
 import glob
 from typing import Dict, List, Tuple, Any, Optional, Union
 import pandas as pd
+from pathlib import Path
 import concurrent.futures
 from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.preprocessing import label_binarize
@@ -270,6 +271,43 @@ class BaseScorer(ABC):
         
         # Ensure model is in evaluation mode
         self.model.eval()
+        
+        # Check if cached outputs are available
+        self.use_cache = False
+        self.cached_data = {}
+        self._load_cached_outputs()
+    
+    def _load_cached_outputs(self):
+        """Load cached model outputs if available."""
+        cache_dir = Path(self.config['base_dir']) / 'cache' / self.config['dataset']['name'] / 'ResNet'
+        
+        if cache_dir.exists():
+            try:
+                # Load calibration data
+                cal_probs_path = cache_dir / 'cal_probs.pt'
+                cal_targets_path = cache_dir / 'cal_targets.pt'
+                if cal_probs_path.exists() and cal_targets_path.exists():
+                    self.cached_data['cal_probs'] = torch.load(cal_probs_path)
+                    self.cached_data['cal_targets'] = torch.load(cal_targets_path)
+                    logging.info(f"Loaded cached calibration outputs from {cache_dir}")
+                    
+                # Load test data
+                test_probs_path = cache_dir / 'test_probs.pt'
+                test_targets_path = cache_dir / 'test_targets.pt'
+                if test_probs_path.exists() and test_targets_path.exists():
+                    self.cached_data['test_probs'] = torch.load(test_probs_path)
+                    self.cached_data['test_targets'] = torch.load(test_targets_path)
+                    logging.info(f"Loaded cached test outputs from {cache_dir}")
+                    
+                if self.cached_data:
+                    self.use_cache = True
+                    logging.info("Using cached model outputs for fair comparison")
+            except Exception as e:
+                logging.warning(f"Failed to load cached outputs: {e}. Will use direct model inference.")
+                self.use_cache = False
+                self.cached_data = {}
+        else:
+            logging.info(f"Cache directory {cache_dir} not found. Will use direct model inference.")
     
     @abstractmethod
     def compute_nonconformity_score(self, probabilities: torch.Tensor, targets: torch.Tensor) -> List[float]:
@@ -307,18 +345,37 @@ class BaseScorer(ABC):
             The calibrated threshold value tau
         """
         logging.info(f"Calibrating using {self.__class__.__name__} scoring function...")
-        self.model.eval()
         nonconformity_scores = []
         
-        with torch.no_grad():
-            for inputs, targets in tqdm(self.dataset.cal_loader, desc="Calibration"):
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-                outputs = self.model(inputs)
-                probabilities = F.softmax(outputs, dim=1)
+        if self.use_cache and 'cal_probs' in self.cached_data:
+            # Use cached outputs
+            probabilities = self.cached_data['cal_probs'].to(self.device)
+            targets = self.cached_data['cal_targets'].to(self.device)
+            
+            # Process in batches to match original behavior
+            batch_size = self.dataset.cal_loader.batch_size
+            num_samples = len(targets)
+            
+            for i in tqdm(range(0, num_samples, batch_size), desc="Calibration (cached)"):
+                end_idx = min(i + batch_size, num_samples)
+                batch_probs = probabilities[i:end_idx]
+                batch_targets = targets[i:end_idx]
                 
                 # Compute nonconformity scores using the specific scoring function
-                batch_scores = self.compute_nonconformity_score(probabilities, targets)
+                batch_scores = self.compute_nonconformity_score(batch_probs, batch_targets)
                 nonconformity_scores.extend(batch_scores)
+        else:
+            # Original implementation using direct model inference
+            self.model.eval()
+            with torch.no_grad():
+                for inputs, targets in tqdm(self.dataset.cal_loader, desc="Calibration"):
+                    inputs, targets = inputs.to(self.device), targets.to(self.device)
+                    outputs = self.model(inputs)
+                    probabilities = F.softmax(outputs, dim=1)
+                    
+                    # Compute nonconformity scores using the specific scoring function
+                    batch_scores = self.compute_nonconformity_score(probabilities, targets)
+                    nonconformity_scores.extend(batch_scores)
         
         # Calculate tau as the percentile corresponding to target coverage
         # The percentile depends on whether lower or higher scores are better
@@ -460,10 +517,11 @@ class BaseScorer(ABC):
             logging.warning("Tau not calibrated. Running calibration first.")
             self.calibrate()
         
-        self.model.eval()
         total_samples = 0
         covered_samples = 0
         set_sizes = []
+        empty_sets = 0
+        non_empty_sizes = []
         
         # For score distribution plot
         true_class_scores = []
@@ -474,11 +532,57 @@ class BaseScorer(ABC):
         all_probabilities = []
         all_sample_scores = []  # Store scores for all classes for each sample
         
-        with torch.no_grad():
-            for inputs, targets in tqdm(self.dataset.test_loader, desc="Evaluation"):
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-                outputs = self.model(inputs)
-                probabilities = F.softmax(outputs, dim=1)
+        if self.use_cache and 'test_probs' in self.cached_data:
+            # Use cached outputs
+            probabilities = self.cached_data['test_probs'].to(self.device)
+            targets = self.cached_data['test_targets'].to(self.device)
+            
+            # Process in batches to match original behavior
+            batch_size = self.dataset.test_loader.batch_size
+            num_samples = len(targets)
+            
+            for i in tqdm(range(0, num_samples, batch_size), desc="Evaluation (cached)"):
+                end_idx = min(i + batch_size, num_samples)
+                batch_probs = probabilities[i:end_idx]
+                batch_targets = targets[i:end_idx]
+                
+                # Store true labels and probabilities for AUROC calculation
+                all_true_labels.extend(batch_targets.cpu().numpy())
+                all_probabilities.append(batch_probs.cpu().numpy())
+                
+                # Create prediction sets and collect metrics
+                # Pass probabilities directly - create_prediction_sets will detect they are probabilities
+                prediction_sets, batch_true_scores, batch_false_scores, batch_all_scores = self.create_prediction_sets(batch_probs, batch_targets)
+                
+                # Store all class scores for each sample
+                all_sample_scores.extend(batch_all_scores)
+                
+                # Update metrics
+                for j, pred_set in enumerate(prediction_sets):
+                    true_class = batch_targets[j].item()
+                    set_size = len(pred_set)
+                    is_covered = true_class in pred_set
+                    covered_samples += int(is_covered)
+                    set_sizes.append(set_size)
+                    total_samples += 1
+                    
+                    # Track empty sets
+                    if set_size == 0:
+                        empty_sets += 1
+                    else:
+                        non_empty_sizes.append(set_size)
+                
+                # Collect scores for distribution plots
+                true_class_scores.extend(batch_true_scores)
+                false_class_scores.extend(batch_false_scores)
+        else:
+            # Original implementation using direct model inference
+            self.model.eval()
+            with torch.no_grad():
+                for inputs, targets in tqdm(self.dataset.test_loader, desc="Evaluation"):
+                    inputs, targets = inputs.to(self.device), targets.to(self.device)
+                    outputs = self.model(inputs)
+                    probabilities = F.softmax(outputs, dim=1)
                 
                 # Store true labels and probabilities for AUROC calculation
                 all_true_labels.extend(targets.cpu().numpy())
@@ -493,10 +597,17 @@ class BaseScorer(ABC):
                 # Update metrics
                 for i, pred_set in enumerate(prediction_sets):
                     true_class = targets[i].item()
+                    set_size = len(pred_set)
                     is_covered = true_class in pred_set
                     covered_samples += int(is_covered)
-                    set_sizes.append(len(pred_set))
+                    set_sizes.append(set_size)
                     total_samples += 1
+                    
+                    # Track empty sets
+                    if set_size == 0:
+                        empty_sets += 1
+                    else:
+                        non_empty_sizes.append(set_size)
                 
                 # Collect scores for distribution plots
                 true_class_scores.extend(batch_true_scores)
@@ -506,6 +617,10 @@ class BaseScorer(ABC):
         empirical_coverage = covered_samples / total_samples
         average_set_size = np.mean(set_sizes)
         median_set_size = np.median(set_sizes)
+        
+        # Calculate non-empty average
+        non_empty_avg = np.mean(non_empty_sizes) if non_empty_sizes else 0.0
+        empty_set_percentage = (empty_sets / total_samples) * 100
         
         # Convert to numpy arrays
         all_true_labels = np.array(all_true_labels)
@@ -545,6 +660,11 @@ class BaseScorer(ABC):
             if count > 0:
                 logging.info(f"  Size {size}: {count} samples ({count/total_samples*100:.2f}%)")
         
+        # Log empty set statistics
+        logging.info(f"Empty sets: {empty_sets} ({empty_set_percentage:.2f}%)")
+        logging.info(f"Average set size (all): {average_set_size:.4f}")
+        logging.info(f"Average set size (non-empty only): {non_empty_avg:.4f}")
+        
         results = {
             "dataset": self.config['dataset']['name'],
             "scoring_function": self.__class__.__name__,
@@ -559,12 +679,17 @@ class BaseScorer(ABC):
             "auroc": auroc,
             "base_auroc": base_auroc,
             "score_auroc": score_auroc,
+            "empty_sets": empty_sets,
+            "empty_set_percentage": empty_set_percentage,
+            "average_set_size_non_empty": non_empty_avg,
         }
         
         logging.info(f"Evaluation Results for {self.config['dataset']['name']} with {self.__class__.__name__}:")
         logging.info(f"  Target Coverage: {self.target_coverage:.4f}")
         logging.info(f"  Empirical Coverage: {empirical_coverage:.4f}")
         logging.info(f"  Average Set Size: {average_set_size:.4f}")
+        logging.info(f"  Average Set Size (non-empty only): {non_empty_avg:.4f}")
+        logging.info(f"  Empty Sets: {empty_sets} ({empty_set_percentage:.2f}%)")
         logging.info(f"  Median Set Size: {median_set_size:.4f}")
         logging.info(f"  AUROC (scoring function): {auroc:.4f}")
         logging.info(f"  AUROC (base model): {base_auroc:.4f}")
@@ -597,7 +722,11 @@ class BaseScorer(ABC):
         Returns:
             Tuple of (prediction_sets, true_class_scores, false_class_scores, all_class_scores)
         """
-        probabilities = F.softmax(outputs, dim=1)
+        # Check if outputs are already probabilities (sum to 1)
+        if torch.allclose(outputs.sum(dim=1), torch.ones(outputs.size(0)).to(outputs.device), atol=1e-3):
+            probabilities = outputs
+        else:
+            probabilities = F.softmax(outputs, dim=1)
         batch_size = targets.size(0)
         num_classes = probabilities.size(1)
         
@@ -635,11 +764,26 @@ class BaseScorer(ABC):
                 if should_include:
                     prediction_set.append(class_idx)
             
-            # Ensure at least one prediction (most likely class) if prediction set is empty
+            # Handle empty prediction sets based on configuration
             if len(prediction_set) == 0:
-                most_likely_class = torch.argmax(probabilities[i]).item()
-                prediction_set.append(most_likely_class)
-                logging.warning(f"Empty prediction set detected. Added most likely class: {most_likely_class}")
+                empty_set_handling = self.config.get('empty_set_handling', 'keep_empty')
+                
+                if empty_set_handling == 'keep_empty':
+                    # Keep as empty - most honest approach
+                    logging.debug(f"Empty prediction set for sample {i}")
+                elif empty_set_handling == 'add_most_likely':
+                    # Add most likely class - maintains some coverage
+                    most_likely_class = torch.argmax(probabilities[i]).item()
+                    prediction_set.append(most_likely_class)
+                    logging.warning(f"Empty set detected, added most likely class: {most_likely_class}")
+                elif empty_set_handling == 'add_top_k':
+                    # Add top-k classes where k is configurable
+                    k = self.config.get('empty_set_top_k', 3)
+                    top_k = torch.topk(probabilities[i], k).indices.tolist()
+                    prediction_set.extend(top_k)
+                    logging.warning(f"Empty set detected, added top-{k} classes")
+                else:
+                    raise ValueError(f"Unknown empty_set_handling: {empty_set_handling}")
             
             prediction_sets.append(prediction_set)
             all_class_scores.append(sample_all_scores)
@@ -802,7 +946,11 @@ class APS_Scorer(BaseScorer):
         Returns:
             Tuple of (prediction_sets, true_class_scores, false_class_scores, all_class_scores)
         """
-        probabilities = F.softmax(outputs, dim=1)
+        # Check if outputs are already probabilities (sum to 1)
+        if torch.allclose(outputs.sum(dim=1), torch.ones(outputs.size(0)).to(outputs.device), atol=1e-3):
+            probabilities = outputs
+        else:
+            probabilities = F.softmax(outputs, dim=1)
         batch_size = targets.size(0)
         
         prediction_sets = []
@@ -829,11 +977,19 @@ class APS_Scorer(BaseScorer):
             # We want to include all classes up to and including k
             prediction_set = sorted_indices[:k+1].cpu().numpy().tolist()
             
-            # Check for empty prediction sets (should not happen due to tau >= 0)
+            # Handle empty prediction sets based on configuration
             if len(prediction_set) == 0:
-                # Ensure at least one prediction (most likely class)
-                prediction_set = [sorted_indices[0].item()]
-                logging.warning("Empty prediction set detected in APS. Added most likely class.")
+                empty_set_handling = self.config.get('empty_set_handling', 'keep_empty')
+                
+                if empty_set_handling == 'keep_empty':
+                    logging.debug(f"Empty prediction set in APS for sample {i}")
+                elif empty_set_handling == 'add_most_likely':
+                    prediction_set = [sorted_indices[0].item()]
+                    logging.warning(f"Empty APS set, added most likely class")
+                elif empty_set_handling == 'add_top_k':
+                    k = self.config.get('empty_set_top_k', 3)
+                    prediction_set = sorted_indices[:k].tolist()
+                    logging.warning(f"Empty APS set, added top-{k} classes")
             
             prediction_sets.append(prediction_set)
             
@@ -1124,7 +1280,11 @@ class Sparsemax_Scorer(BaseScorer):
             Tuple of (prediction_sets, true_class_scores, false_class_scores, all_class_scores)
         """
         # Apply softmax and then convert to logits for sparsemax
-        probabilities = F.softmax(outputs, dim=1)
+        # Check if outputs are already probabilities (sum to 1)
+        if torch.allclose(outputs.sum(dim=1), torch.ones(outputs.size(0)).to(outputs.device), atol=1e-3):
+            probabilities = outputs
+        else:
+            probabilities = F.softmax(outputs, dim=1)
         epsilon = 1e-10
         probabilities = torch.nan_to_num(probabilities, nan=1.0/probabilities.size(1))
         logits = torch.log(probabilities + epsilon)
@@ -1169,11 +1329,21 @@ class Sparsemax_Scorer(BaseScorer):
                 if score <= self.tau:
                     prediction_set.append(class_idx)
             
-            # Ensure prediction set is not empty
+            # Handle empty prediction sets based on configuration
             if len(prediction_set) == 0:
-                most_likely_class = torch.argmax(probabilities[i]).item()
-                prediction_set.append(most_likely_class)
-                logging.warning(f"Empty prediction set detected in Sparsemax. Added most likely class: {most_likely_class}")
+                empty_set_handling = self.config.get('empty_set_handling', 'keep_empty')
+                
+                if empty_set_handling == 'keep_empty':
+                    logging.debug(f"Empty prediction set in Sparsemax for sample {i}")
+                elif empty_set_handling == 'add_most_likely':
+                    most_likely_class = torch.argmax(probabilities[i]).item()
+                    prediction_set.append(most_likely_class)
+                    logging.warning(f"Empty Sparsemax set, added most likely class: {most_likely_class}")
+                elif empty_set_handling == 'add_top_k':
+                    k = self.config.get('empty_set_top_k', 3)
+                    top_k = torch.topk(probabilities[i], k).indices.tolist()
+                    prediction_set.extend(top_k)
+                    logging.warning(f"Empty Sparsemax set, added top-{k} classes")
             
             prediction_sets.append(prediction_set)
             all_class_scores.append(sample_all_scores)
