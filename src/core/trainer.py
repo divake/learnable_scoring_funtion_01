@@ -289,13 +289,14 @@ class ScoringFunctionTrainer:
             'train_sizes': [],
             'val_coverages': [],
             'val_sizes': [],
+            'val_non_empty_sizes': [],
             'tau_values': [],
             'auroc_values': [],
             'ece_values': []
         }
     
     def _log_metrics(self, epoch, num_epochs, current_lr, train_loss, train_coverage, 
-                     train_size, val_coverage, val_size, tau, auroc=None, ece=None):
+                     train_size, val_coverage, val_size, tau, auroc=None, ece=None, val_non_empty_size=None):
         """Log training metrics"""
         logging.info(f"Epoch {epoch+1}/{num_epochs}")
         logging.info(f"Learning rate: {current_lr:.6f}")
@@ -304,6 +305,8 @@ class ScoringFunctionTrainer:
         logging.info(f"Train Set Size: {train_size:.4f}")
         logging.info(f"Val Coverage: {val_coverage:.4f}")
         logging.info(f"Val Set Size: {val_size:.4f}")
+        if val_non_empty_size is not None:
+            logging.info(f"Val Non-Empty Set Size: {val_non_empty_size:.4f}")
         logging.info(f"Tau: {tau:.4f}")
         
         if auroc is not None:
@@ -312,7 +315,7 @@ class ScoringFunctionTrainer:
             logging.info(f"ECE: {ece:.4f}")
     
     def _update_history(self, history, epoch, train_loss, train_coverage, train_size,
-                       val_coverage, val_size, tau, auroc=None, ece=None):
+                       val_coverage, val_size, tau, auroc=None, ece=None, val_non_empty_size=None):
         """Update training history"""
         history['epochs'].append(epoch)
         history['train_losses'].append(train_loss)
@@ -320,6 +323,8 @@ class ScoringFunctionTrainer:
         history['train_sizes'].append(train_size)
         history['val_coverages'].append(val_coverage)
         history['val_sizes'].append(val_size)
+        if val_non_empty_size is not None:
+            history['val_non_empty_sizes'].append(val_non_empty_size)
         history['tau_values'].append(tau)
         
         if auroc is not None:
@@ -491,7 +496,7 @@ class ScoringFunctionTrainer:
             )
             
             # Evaluate
-            val_coverage, val_size = self.evaluate(self.test_loader, tau)
+            val_coverage, val_size, val_non_empty_size = self.evaluate(self.test_loader, tau)
             
             # Calculate AUROC and ECE
             auroc, ece = self._calculate_advanced_metrics(tau)
@@ -502,13 +507,13 @@ class ScoringFunctionTrainer:
             # Log metrics
             self._log_metrics(
                 epoch, num_epochs, current_lr, train_loss, train_coverage,
-                train_size, val_coverage, val_size, tau, auroc, ece
+                train_size, val_coverage, val_size, tau, auroc, ece, val_non_empty_size
             )
             
             # Update history
             self._update_history(
                 history, epoch, train_loss, train_coverage, train_size,
-                val_coverage, val_size, tau, auroc, ece
+                val_coverage, val_size, tau, auroc, ece, val_non_empty_size
             )
             
             # Update plots
@@ -809,14 +814,23 @@ class ScoringFunctionTrainer:
             # Add separation loss to encourage true scores near 0 and false scores near 1
             # This helps create the desired separation in the score distributions
             if hasattr(self.scoring_fn, 'separation_factor'):
-                # Push true scores toward 0
-                true_score_loss = torch.mean(target_scores ** 2)
+                # Push true scores toward 0 with stronger penalty for larger values
+                # Using power of 4 for more aggressive push toward 0
+                true_score_loss = torch.mean(target_scores ** 4)
                 
-                # Push false scores toward 1
-                false_score_loss = torch.mean((1.0 - false_scores) ** 2)
+                # Push false scores toward 1 with stronger penalty for smaller values
+                # Using power of 4 for more aggressive push toward 1
+                false_score_loss = torch.mean((1.0 - false_scores) ** 4)
                 
-                # Combined separation loss
-                separation_loss = true_score_loss + false_score_loss
+                # Add entropy-like term to encourage extreme values
+                # This penalizes scores that are in the middle (around 0.5)
+                entropy_penalty = -torch.mean(
+                    scores * torch.log(scores + 1e-8) + 
+                    (1 - scores) * torch.log(1 - scores + 1e-8)
+                )
+                
+                # Combined separation loss with entropy term
+                separation_loss = true_score_loss + false_score_loss + 0.1 * entropy_penalty
                 self.scoring_fn.separation_loss = self.scoring_fn.separation_factor * separation_loss
             else:
                 separation_loss = 0.0
@@ -891,6 +905,7 @@ class ScoringFunctionTrainer:
         self.scoring_fn.eval()
         coverage_meter = AverageMeter()
         size_meter = AverageMeter()
+        non_empty_size_meter = AverageMeter()
         
         # Ensure tau is within reasonable bounds
         tau_config = self.config['tau']
@@ -911,11 +926,18 @@ class ScoringFunctionTrainer:
                 set_sizes = pred_sets.float().sum(dim=1)
                 avg_size = set_sizes.mean()
                 
+                # Compute non-empty average set size
+                non_empty_mask = set_sizes > 0
+                if non_empty_mask.any():
+                    non_empty_sizes = set_sizes[non_empty_mask]
+                    non_empty_avg = non_empty_sizes.mean()
+                    non_empty_size_meter.update(non_empty_avg.item(), n=non_empty_mask.sum().item())
+                
                 # Update metrics
                 coverage_meter.update(coverage.item())
                 size_meter.update(avg_size.item())
         
-        return coverage_meter.avg, size_meter.avg
+        return coverage_meter.avg, size_meter.avg, non_empty_size_meter.avg
     
     def _update_plots(self, history, tau, save_dir, plot_dir):
         """Update training plots"""
@@ -955,7 +977,8 @@ class ScoringFunctionTrainer:
             val_coverages=history['val_coverages'],
             val_sizes=history['val_sizes'],
             tau_values=history['tau_values'],
-            save_dir=plot_dir
+            save_dir=plot_dir,
+            val_non_empty_sizes=history.get('val_non_empty_sizes', None)
         )
         plt.close()
         

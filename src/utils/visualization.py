@@ -22,7 +22,7 @@ class BasePlot:
         plt.close()
 
 def plot_training_curves(epochs, train_losses, train_coverages, train_sizes,
-                        val_coverages, val_sizes, tau_values, save_dir):
+                        val_coverages, val_sizes, tau_values, save_dir, val_non_empty_sizes=None):
     """Plot training metrics including tau values."""
     plotter = BasePlot(figsize=(20, 5))
     plotter.setup()
@@ -48,7 +48,10 @@ def plot_training_curves(epochs, train_losses, train_coverages, train_sizes,
     # Plot set size
     plt.subplot(1, 4, 3)
     plt.plot(epochs, train_sizes, label='Train Set Size')
-    plt.plot(epochs, val_sizes, label='Val Set Size')
+    plt.plot(epochs, val_sizes, label='Val Set Size (All)')
+    if val_non_empty_sizes is not None and len(val_non_empty_sizes) > 0:
+        plt.plot(epochs[:len(val_non_empty_sizes)], val_non_empty_sizes, 
+                label='Val Non-Empty Set Size', linestyle='--', color='green')
     plt.xlabel('Epoch')
     plt.ylabel('Average Set Size')
     plt.title('Set Size vs Epoch')

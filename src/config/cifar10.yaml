@@ -60,15 +60,14 @@ optimizer:
 scoring_function:
   hidden_dims: [64, 32]
   dropout: 0.2
-  l2_lambda: 0.1
+  l2_lambda: 0.01  # Reduced L2 regularization to allow more extreme values
   activation:
     name: 'LeakyReLU'
     params:
       negative_slope: 0.1
   final_activation:
-    name: 'Softplus'
-    params:
-      beta: 10  # Increased back to 10 for sharper separation
+    name: 'Sigmoid'  # Changed to sigmoid for proper 0-1 range
+    params: {}
 
 # Training constraints
 tau:
@@ -87,8 +86,8 @@ set_size:
 
 # Training dynamics
 training_dynamics:
-  stability_factor: 0.05  # Stability regularization strength
-  separation_factor: 0.5  # Separation loss weight
+  stability_factor: 0.02  # Reduced stability regularization to allow more aggressive learning
+  separation_factor: 2.0  # Increased separation loss weight for stronger score separation
   perturbation_noise: 0.01  # Noise level for stability checks
   permutation_augmentation_prob: 0.5  # Probability of applying permutation during training
   coverage_tolerance: 0.02  # Tolerance for coverage checks (±2%)
@@ -96,6 +95,6 @@ training_dynamics:
   coverage_deficit_threshold: 0.02  # When to boost coverage loss
   size_penalty_boost: 1.5  # Boost factor for size penalty when coverage is good
   coverage_boost: 2.0  # Boost factor for coverage loss when below target
-  xavier_init_gain: 0.5  # Gain for Xavier initialization
+  xavier_init_gain: 1.0  # Increased gain for larger initial weights
   num_workers: 2  # DataLoader workers for cached data
   ece_test_points: 10  # Number of points for ECE calculation

@@ -73,6 +73,9 @@ class ScoringFunction(nn.Module):
         final_activation_config = config['scoring_function']['final_activation']
         if final_activation_config['name'] == 'Softplus':
             final_activation = nn.Softplus(**final_activation_config['params'])
+        elif final_activation_config['name'] == 'Sigmoid':
+            # Sigmoid ensures output is in [0, 1] range
+            final_activation = nn.Sigmoid()
         else:
             raise ValueError(f"Unsupported final activation: {final_activation_config['name']}")
         layers.append(final_activation)
@@ -132,8 +135,10 @@ class ScoringFunction(nn.Module):
         l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
         self.l2_reg = self.l2_lambda * l2_reg
         
-        # Ensure scores are non-negative
-        scores = torch.clamp(scores, min=0.0)
+        # No need to clamp if using sigmoid activation
+        # For other activations, ensure scores are non-negative
+        if not isinstance(self.network[-1], nn.Sigmoid):
+            scores = torch.clamp(scores, min=0.0)
         
         # Add stability term during training
         if self.training:
@@ -142,7 +147,8 @@ class ScoringFunction(nn.Module):
             perturbed_x = perturbed_x / perturbed_x.sum(dim=-1, keepdim=True)
             
             perturbed_scores = self.network(perturbed_x)
-            perturbed_scores = torch.clamp(perturbed_scores, min=0.0)
+            if not isinstance(self.network[-1], nn.Sigmoid):
+                perturbed_scores = torch.clamp(perturbed_scores, min=0.0)
             
             # Stability loss encourages consistent outputs
             self.stability_loss = self.stability_factor * torch.mean((scores - perturbed_scores)**2)
