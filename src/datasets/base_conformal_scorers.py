@@ -472,12 +472,16 @@ class BaseScorer(ABC):
         # Add legend with custom position
         plt.legend(loc="upper left")
         
-        # Set axis limits based on data
-        min_score = min(min(true_class_scores) if true_class_scores else 0, 
-                        min(false_class_scores) if false_class_scores else 0)
-        max_score = max(max(true_class_scores) if true_class_scores else 1, 
-                        max(false_class_scores) if false_class_scores else 1)
-        plt.xlim(min_score - 0.2, max_score + 0.2)
+        # Set axis limits based on data (filter out inf values)
+        true_finite = [s for s in true_class_scores if not np.isinf(s)]
+        false_finite = [s for s in false_class_scores if not np.isinf(s)]
+        
+        if true_finite or false_finite:
+            min_score = min(min(true_finite) if true_finite else 0, 
+                            min(false_finite) if false_finite else 0)
+            max_score = max(max(true_finite) if true_finite else 1, 
+                            max(false_finite) if false_finite else 1)
+            plt.xlim(min_score - 0.2, max_score + 0.2)
         
         # Save the plot
         plot_path = os.path.join(self.plot_dir, f'{dataset_name}_score_distribution.png')
@@ -1232,8 +1236,12 @@ class Sparsemax_Scorer(BaseScorer):
             max_score, _ = torch.max(sparsemax_probs[i], dim=0)
             max_score = max_score.item()
             
-            # Compute nonconformity score: max(z_max - z_y - delta, 0)
-            score = max(max_score - true_class_score - self.delta, 0)
+            # For sparsemax, if true class has zero probability, it should have high score
+            if true_class_score < 1e-10:  # Effectively zero
+                score = 1000.0  # Use large value instead of inf for numerical stability
+            else:
+                # Compute nonconformity score: max(z_max - z_y - delta, 0)
+                score = max(max_score - true_class_score - self.delta, 0)
             
             nonconformity_scores.append(score)
         
@@ -1275,6 +1283,10 @@ class Sparsemax_Scorer(BaseScorer):
                 
             class_prob = sparsemax_probs[class_idx].item()
             max_prob = torch.max(sparsemax_probs).item()
+            
+            # For sparsemax, classes with zero probability should have infinite score
+            if class_prob < 1e-10:  # Effectively zero
+                return float('inf')
             
             # Calculate nonconformity score: max(max_prob - class_prob - delta, 0)
             score = max(max_prob - class_prob - self.delta, 0)
@@ -1333,8 +1345,12 @@ class Sparsemax_Scorer(BaseScorer):
             for class_idx in range(num_classes):
                 class_score = sparsemax_probs[i, class_idx].item()
                 
-                # Compute nonconformity score: max(z_max - z_class - delta, 0)
-                score = max(max_score - class_score - self.delta, 0)
+                # For sparsemax, classes with zero probability should have infinite score
+                if class_score < 1e-10:  # Effectively zero
+                    score = float('inf')
+                else:
+                    # Compute nonconformity score: max(z_max - z_class - delta, 0)
+                    score = max(max_score - class_score - self.delta, 0)
                 sample_all_scores.append(score)
                 
                 # Collect scores for true and false classes

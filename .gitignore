@@ -14,3 +14,6 @@ __pycache__/
 # Claude Code specific files
 CLAUDE.md
 .memory
+dataset_search_prompt.md
+ILSVRC2012_img_train.tar
+docs/empty_set_handling.md

@@ -51,8 +51,21 @@ empty_set_top_k: 3
 When empty sets occur, we report:
 - `empty_sets`: Count of empty prediction sets
 - `empty_set_percentage`: Percentage of test samples with empty sets
-- `average_set_size`: Includes empty sets (size 0)
-- `average_set_size_non_empty`: Average excluding empty sets
+- `average_set_size`: **Excludes empty sets** (honest evaluation)
+- `average_set_size_with_empty`: Includes empty sets (for reference)
+
+### Important Note on Average Set Size
+
+The primary `average_set_size` metric **excludes empty sets** from the calculation. This provides the most honest evaluation because:
+- Empty sets (size 0) would artificially lower the average
+- We want to know the average size of *actual* prediction sets
+- Empty sets represent complete failure and should be tracked separately
+
+Example:
+- 100 samples: 90 with size 2, 10 with size 0 (empty)
+- `average_set_size` = 2.0 (calculated from 90 non-empty sets)
+- `average_set_size_with_empty` = 1.8 (includes the 10 zeros)
+- `empty_set_percentage` = 10%
 
 ## Why This Matters
 
