@@ -279,7 +279,14 @@ class BaseScorer(ABC):
     
     def _load_cached_outputs(self):
         """Load cached model outputs if available."""
-        cache_dir = Path(self.config['base_dir']) / 'cache' / self.config['dataset']['name'] / 'ResNet'
+        # Determine model type from architecture name
+        model_arch = self.config.get('model', {}).get('architecture', 'resnet18')
+        if 'vit' in model_arch.lower() or 'vision' in model_arch.lower():
+            model_type = 'VisionTransformer'
+        else:
+            model_type = 'ResNet'
+        
+        cache_dir = Path(self.config['base_dir']) / 'cache' / self.config['dataset']['name'] / model_type
         
         if cache_dir.exists():
             try:
@@ -615,11 +622,18 @@ class BaseScorer(ABC):
         
         # Calculate metrics
         empirical_coverage = covered_samples / total_samples
-        average_set_size = np.mean(set_sizes)
-        median_set_size = np.median(set_sizes)
         
-        # Calculate non-empty average
-        non_empty_avg = np.mean(non_empty_sizes) if non_empty_sizes else 0.0
+        # Calculate average set size excluding empty sets (honest evaluation)
+        if non_empty_sizes:
+            average_set_size = np.mean(non_empty_sizes)
+            median_set_size = np.median(non_empty_sizes)
+        else:
+            # All sets are empty - this is a complete failure
+            average_set_size = 0.0
+            median_set_size = 0.0
+            
+        # Also calculate average including empty sets for reference
+        average_set_size_with_empty = np.mean(set_sizes)
         empty_set_percentage = (empty_sets / total_samples) * 100
         
         # Convert to numpy arrays
@@ -662,8 +676,11 @@ class BaseScorer(ABC):
         
         # Log empty set statistics
         logging.info(f"Empty sets: {empty_sets} ({empty_set_percentage:.2f}%)")
-        logging.info(f"Average set size (all): {average_set_size:.4f}")
-        logging.info(f"Average set size (non-empty only): {non_empty_avg:.4f}")
+        if empty_sets > 0:
+            logging.info(f"Average set size (excluding empty): {average_set_size:.4f}")
+            logging.info(f"Average set size (including empty): {average_set_size_with_empty:.4f}")
+        else:
+            logging.info(f"Average set size: {average_set_size:.4f}")
         
         results = {
             "dataset": self.config['dataset']['name'],
@@ -681,14 +698,15 @@ class BaseScorer(ABC):
             "score_auroc": score_auroc,
             "empty_sets": empty_sets,
             "empty_set_percentage": empty_set_percentage,
-            "average_set_size_non_empty": non_empty_avg,
+            "average_set_size_with_empty": average_set_size_with_empty,
         }
         
         logging.info(f"Evaluation Results for {self.config['dataset']['name']} with {self.__class__.__name__}:")
         logging.info(f"  Target Coverage: {self.target_coverage:.4f}")
         logging.info(f"  Empirical Coverage: {empirical_coverage:.4f}")
-        logging.info(f"  Average Set Size: {average_set_size:.4f}")
-        logging.info(f"  Average Set Size (non-empty only): {non_empty_avg:.4f}")
+        logging.info(f"  Average Set Size (excluding empty): {average_set_size:.4f}")
+        if empty_sets > 0:
+            logging.info(f"  Average Set Size (including empty): {average_set_size_with_empty:.4f}")
         logging.info(f"  Empty Sets: {empty_sets} ({empty_set_percentage:.2f}%)")
         logging.info(f"  Median Set Size: {median_set_size:.4f}")
         logging.info(f"  AUROC (scoring function): {auroc:.4f}")
@@ -1908,6 +1926,8 @@ def main():
     
     # Print summary table
     logging.info(f"\n=== Conformal Prediction Evaluation Summary ===")
+    logging.info(f"{'Dataset':<10} | {'Scoring':<10} | {'Coverage':<10} | {'Set Size (w/empty)':<20} | {'Empty %':<8} | {'AUROC':<10} | {'Status':<10}")
+    logging.info("-" * 100)
     
     # First, print non-VLM datasets
     for dataset in [d for d in all_results.keys() if d != 'vlm']:
@@ -1923,16 +1943,23 @@ def main():
                 status = "SUCCESS"
                 coverage = results.get("empirical_coverage", "N/A")
                 avg_size = results.get("average_set_size", "N/A")
+                avg_size_with_empty = results.get("average_set_size_with_empty", "N/A")
+                empty_pct = results.get("empty_set_percentage", 0.0)
                 auroc = results.get("auroc", "N/A")
                 
                 if isinstance(coverage, float):
                     coverage = f"{coverage:.4f}"
                 if isinstance(avg_size, float):
                     avg_size = f"{avg_size:.4f}"
+                if isinstance(avg_size_with_empty, float):
+                    avg_size_with_empty = f"{avg_size_with_empty:.4f}"
                 if isinstance(auroc, float):
                     auroc = f"{auroc:.4f}"
                     
-            logging.info(f"{dataset:<10} | {scoring:<10} | {coverage:<10} | {avg_size:<15} | {auroc:<10} | {status:<10}")
+            # Show both set size metrics
+            set_size_str = f"{avg_size_with_empty} ({avg_size})"
+            empty_str = f"{empty_pct:.1f}%" if isinstance(empty_pct, float) else "N/A"
+            logging.info(f"{dataset:<10} | {scoring:<10} | {coverage:<10} | {set_size_str:<20} | {empty_str:<8} | {auroc:<10} | {status:<10}")
     
     # Then, print VLM models - updated to include datasets
     if 'vlm' in all_results:
