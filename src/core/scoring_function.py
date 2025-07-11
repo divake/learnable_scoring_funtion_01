@@ -7,11 +7,10 @@ import torch.nn as nn
 class ScoringFunction(nn.Module):
     def __init__(self, input_dim=None, hidden_dims=[64, 32], output_dim=None, config=None):
         """
-        Initialize class-agnostic scoring function that processes full probability vectors
+        Initialize learnable scoring function with feature extraction
         
-        This function learns a transformation that takes the full probability distribution
-        and outputs scores for each class. It's designed to be class-agnostic through
-        training with permutation augmentation and symmetric loss functions.
+        This function extracts features from probability distributions and learns
+        to produce optimal scores that minimize set size at target coverage.
         
         Args:
             input_dim: Number of classes (dimension of probability vector)
@@ -43,44 +42,24 @@ class ScoringFunction(nn.Module):
         self.input_dim = input_dim
         self.output_dim = output_dim
         
-        # Build the network
-        layers = []
-        prev_dim = input_dim
-        
-        # Get activation configuration
-        activation_config = config['scoring_function']['activation']
-        if activation_config['name'] == 'LeakyReLU':
-            activation = nn.LeakyReLU(**activation_config['params'])
-        else:
-            raise ValueError(f"Unsupported activation: {activation_config['name']}")
-        
-        # Build hidden layers
+        # Extract features from probability distribution
         dropout_rate = config['scoring_function']['dropout']
-        for hidden_dim in hidden_dims:
-            layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                nn.BatchNorm1d(hidden_dim),
-                activation,
-                nn.Dropout(dropout_rate)
-            ])
-            prev_dim = hidden_dim
         
-        # Final layer - outputs scores for each class
-        final_layer = nn.Linear(prev_dim, output_dim)
-        layers.append(final_layer)
+        # Feature extraction: compute statistics from probability vector
+        # Input will be concatenated features (5 features per class)
+        feature_dim = 5  # prob, 1-prob, rank, entropy contribution, relative prob
         
-        # Get final activation configuration
-        final_activation_config = config['scoring_function']['final_activation']
-        if final_activation_config['name'] == 'Softplus':
-            final_activation = nn.Softplus(**final_activation_config['params'])
-        elif final_activation_config['name'] == 'Sigmoid':
-            # Sigmoid ensures output is in [0, 1] range
-            final_activation = nn.Sigmoid()
-        else:
-            raise ValueError(f"Unsupported final activation: {final_activation_config['name']}")
-        layers.append(final_activation)
-        
-        self.network = nn.Sequential(*layers)
+        # Network to process features and output scores
+        self.feature_net = nn.Sequential(
+            nn.Linear(feature_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(32, 1),
+            nn.Sigmoid()  # Output in [0, 1] range
+        )
         
         self.l2_lambda = config['scoring_function']['l2_lambda']
         
@@ -95,21 +74,28 @@ class ScoringFunction(nn.Module):
         self._init_weights()
         
     def _init_weights(self):
-        """Initialize weights to encourage symmetric behavior across classes"""
-        for module in self.modules():
+        """Initialize weights to approximate 1-p baseline initially"""
+        for i, module in enumerate(self.feature_net.modules()):
             if isinstance(module, nn.Linear):
-                # Small random initialization to break symmetry but keep it minimal
-                nn.init.xavier_uniform_(module.weight, gain=self.xavier_init_gain)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0.0)
+                if i == 0:  # First layer
+                    # Initialize to emphasize 1-p feature (index 1)
+                    nn.init.normal_(module.weight, mean=0.0, std=0.01)
+                    if module.weight.shape[1] >= 2:
+                        module.weight.data[:, 1] = 0.5  # Emphasize 1-p feature
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0.0)
+                else:
+                    # Other layers: small random init
+                    nn.init.xavier_uniform_(module.weight, gain=0.5)
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0.0)
     
     def forward(self, x):
         """
         Forward pass through the scoring function.
         
-        This processes the full probability vector to understand the distribution
-        and outputs scores for each class. The function is made class-agnostic
-        through permutation augmentation during training.
+        This extracts features from probability distributions and learns
+        optimal scores to minimize set size at target coverage.
         
         Args:
             x: Input tensor of shape (batch_size, num_classes) containing probability vectors
@@ -126,37 +112,53 @@ class ScoringFunction(nn.Module):
         if num_classes != self.num_classes:
             raise ValueError(f"Expected {self.num_classes} classes, got {num_classes}")
         
-        # Pass the full probability vector through the network
-        # This allows the MLP to see the entire distribution and learn
-        # relationships between probabilities
-        scores = self.network(x)
+        # Extract features for each probability
+        features_list = []
+        
+        # Feature 1: Raw probability
+        features_list.append(x)
+        
+        # Feature 2: 1-p (baseline score)
+        features_list.append(1.0 - x)
+        
+        # Feature 3: Rank-based feature (normalized position when sorted)
+        sorted_probs, indices = torch.sort(x, dim=1, descending=True)
+        ranks = torch.zeros_like(x)
+        for i in range(batch_size):
+            ranks[i, indices[i]] = torch.arange(num_classes, dtype=x.dtype, device=x.device) / (num_classes - 1)
+        features_list.append(ranks)
+        
+        # Feature 4: Entropy contribution
+        entropy_contrib = -x * torch.log(x + 1e-8)
+        features_list.append(entropy_contrib)
+        
+        # Feature 5: Relative probability (prob / max_prob)
+        max_probs = x.max(dim=1, keepdim=True)[0]
+        relative_probs = x / (max_probs + 1e-8)
+        features_list.append(relative_probs)
+        
+        # Stack features
+        features = torch.stack(features_list, dim=2)  # (batch_size, num_classes, 5)
+        
+        # Process each class independently
+        features_flat = features.reshape(-1, 5)  # (batch_size * num_classes, 5)
+        scores_flat = self.feature_net(features_flat)  # (batch_size * num_classes, 1)
+        
+        # Reshape back
+        scores = scores_flat.reshape(batch_size, num_classes)
         
         # Add L2 regularization
         l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
         self.l2_reg = self.l2_lambda * l2_reg
         
-        # No need to clamp if using sigmoid activation
-        # For other activations, ensure scores are non-negative
-        if not isinstance(self.network[-1], nn.Sigmoid):
-            scores = torch.clamp(scores, min=0.0)
-        
         # Add stability term during training
         if self.training:
-            # Small perturbation to test robustness
-            perturbed_x = x + torch.randn_like(x) * 0.01
-            perturbed_x = perturbed_x / perturbed_x.sum(dim=-1, keepdim=True)
+            # For stability, add small L2 penalty on score variance
+            score_variance = torch.var(scores, dim=1).mean()
+            self.stability_loss = self.stability_factor * score_variance
             
-            perturbed_scores = self.network(perturbed_x)
-            if not isinstance(self.network[-1], nn.Sigmoid):
-                perturbed_scores = torch.clamp(perturbed_scores, min=0.0)
-            
-            # Stability loss encourages consistent outputs
-            self.stability_loss = self.stability_factor * torch.mean((scores - perturbed_scores)**2)
-            
-            # Add class-agnostic regularization
-            # Encourage the model to produce similar score distributions for similar probability patterns
-            # This is achieved through permutation augmentation in the trainer
-            self.separation_loss = 0.0  # Will be computed in trainer if needed
+            # No separation loss needed
+            self.separation_loss = 0.0
         else:
             self.stability_loss = 0.0
             self.separation_loss = 0.0

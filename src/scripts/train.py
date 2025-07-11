@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(src_dir))
 
 import torch
 from src.core import ScoringFunction, ScoringFunctionTrainer, ConfigManager
+from src.core.simple_scoring import SimpleScoringFunction
 from src.utils import set_seed
 
 def setup_logging(config):
@@ -56,11 +57,8 @@ def main():
     logging.info("Base model loaded successfully")
     
     # Initialize scoring function
-    # input_dim will be automatically taken from config['dataset']['num_classes']
-    scoring_fn = ScoringFunction(
-        input_dim=None,  # Will be taken from config
-        hidden_dims=config['scoring_function']['hidden_dims'],
-        output_dim=None,  # Will default to num_classes (same as input_dim)
+    # Use simple scoring function for better stability
+    scoring_fn = SimpleScoringFunction(
         config=config
     ).to(config['device'])
     logging.info(f"Scoring function initialized with input_dim={config['dataset']['num_classes']}, output_dim={config['dataset']['num_classes']}")

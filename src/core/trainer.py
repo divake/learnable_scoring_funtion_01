@@ -258,18 +258,32 @@ class ScoringFunctionTrainer:
             probs = torch.load(probs_path)
             targets = torch.load(targets_path)
             
+            # Move to GPU if requested for faster training
+            if self.config.get('cache_on_gpu', False) and self.device.type == 'cuda':
+                probs = probs.to(self.device)
+                targets = targets.to(self.device)
+                logging.info(f"Moved {name} dataset to GPU for faster training")
+            
             # Create dataset
             dataset = TensorDataset(probs, targets)
             self.cached_datasets[name] = dataset
             
             # Create dataloader
             shuffle = (name == 'train')  # Only shuffle training data
+            # If data is on GPU, we can't use multiple workers
+            if self.config.get('cache_on_gpu', False) and self.device.type == 'cuda':
+                num_workers = 0
+                pin_memory = False
+            else:
+                num_workers = self.config.get('training_dynamics', {}).get('num_workers', 2)
+                pin_memory = True
+                
             self.cached_loaders[name] = DataLoader(
                 dataset,
                 batch_size=self.config['batch_size'],
                 shuffle=shuffle,
-                num_workers=self.config.get('training_dynamics', {}).get('num_workers', 2),  # Configurable workers
-                pin_memory=True
+                num_workers=num_workers,
+                pin_memory=pin_memory
             )
         
         # Update the loaders
@@ -793,47 +807,44 @@ class ScoringFunctionTrainer:
             mask[torch.arange(batch_size), targets] = False
             false_scores = scores[mask].view(batch_size, -1)
             
-            # Margin loss
+            # Margin loss - encourage separation between true and false scores
+            # We want true scores to be lower than false scores (for smaller sets)
             margin_loss = torch.relu(
-                target_scores - false_scores.min(dim=1)[0] + set_size_config['margin']
+                target_scores - false_scores.mean(dim=1) + 0.1
             ).mean()
             
-            # Coverage loss
+            # Coverage loss - only penalize if we're far from target
             coverage_indicators = (target_scores <= tau).float()
             coverage = coverage_indicators.mean()
-            coverage_loss = (1 - coverage)
             
-            # Size penalty
+            # Only apply coverage loss if we're outside acceptable range
+            coverage_diff = coverage - target_coverage
+            if abs(coverage_diff) > 0.01:  # 1% tolerance
+                if coverage_diff < 0:  # Under-coverage
+                    coverage_loss = 100.0 * (coverage_diff ** 2)
+                else:  # Over-coverage
+                    coverage_loss = 10.0 * (coverage_diff ** 2)
+            else:
+                coverage_loss = 0.0
+            
+            # Size penalty - directly optimize average set size
             pred_sets = scores <= tau
             set_sizes = pred_sets.float().sum(dim=1)
             avg_size = set_sizes.mean()
             
-            size_deviation = torch.abs(avg_size - set_size_config['target'])
-            size_penalty = size_deviation ** 2
+            # Size penalty with baseline comparison
+            # Compare to static 1-p baseline performance
+            baseline_size = 1.4288  # Static 1-p average set size on ImageNet
+            size_improvement = baseline_size - avg_size
             
-            # Add separation loss to encourage true scores near 0 and false scores near 1
-            # This helps create the desired separation in the score distributions
-            if hasattr(self.scoring_fn, 'separation_factor'):
-                # Push true scores toward 0 with stronger penalty for larger values
-                # Using power of 4 for more aggressive push toward 0
-                true_score_loss = torch.mean(target_scores ** 4)
-                
-                # Push false scores toward 1 with stronger penalty for smaller values
-                # Using power of 4 for more aggressive push toward 1
-                false_score_loss = torch.mean((1.0 - false_scores) ** 4)
-                
-                # Add entropy-like term to encourage extreme values
-                # This penalizes scores that are in the middle (around 0.5)
-                entropy_penalty = -torch.mean(
-                    scores * torch.log(scores + 1e-8) + 
-                    (1 - scores) * torch.log(1 - scores + 1e-8)
-                )
-                
-                # Combined separation loss with entropy term
-                separation_loss = true_score_loss + false_score_loss + 0.1 * entropy_penalty
-                self.scoring_fn.separation_loss = self.scoring_fn.separation_factor * separation_loss
+            # Reward improvement over baseline, penalize worse performance
+            if size_improvement > 0:
+                size_penalty = -size_improvement * 10.0  # Reward improvement
             else:
-                separation_loss = 0.0
+                size_penalty = avg_size  # Penalize if worse than baseline
+            
+            # No separation loss needed for 1-p based approach
+            separation_loss = 0.0
             
             # Get dynamic training parameters
             dynamics = self.config.get('training_dynamics', {})
