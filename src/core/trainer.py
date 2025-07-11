@@ -613,7 +613,7 @@ class ScoringFunctionTrainer:
                 targets = targets.to(self.device)
                 
                 # Get scores from our scoring function
-                scores, _, _ = self._compute_scores(inputs, targets)
+                scores, target_scores, _ = self._compute_scores(inputs, targets)
                 
                 all_true_labels.extend(targets.cpu().numpy())
                 all_scores.append(scores.cpu().numpy())
@@ -676,7 +676,7 @@ class ScoringFunctionTrainer:
                 targets = targets.to(self.device)
                 
                 # Get scores from scoring function
-                scores, _, _ = self._compute_scores(inputs, targets)
+                scores, target_scores, _ = self._compute_scores(inputs, targets)
                 
                 cal_scores.append(scores.cpu().numpy())
                 cal_labels.extend(targets.cpu().numpy())
@@ -870,6 +870,12 @@ class ScoringFunctionTrainer:
             # Add L2 regularization if available
             if hasattr(self.scoring_fn, 'l2_reg'):
                 loss = loss + self.scoring_fn.l2_reg
+            
+            # Check for NaN loss
+            if torch.isnan(loss) or torch.isinf(loss):
+                logging.warning(f"NaN/Inf loss detected at batch {pbar.n}. Skipping update.")
+                # Skip this batch
+                continue
             
             optimizer.zero_grad()
             loss.backward()

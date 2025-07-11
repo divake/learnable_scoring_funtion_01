@@ -7,11 +7,10 @@ import torch.nn as nn
 class ScoringFunction(nn.Module):
     def __init__(self, input_dim=None, hidden_dims=[64, 32], output_dim=None, config=None):
         """
-        Initialize class-agnostic scoring function that processes full probability vectors
+        Initialize enhanced scoring function with distribution features and threshold prediction
         
-        This function learns a transformation that takes the full probability distribution
-        and outputs scores for each class. It's designed to be class-agnostic through
-        training with permutation augmentation and symmetric loss functions.
+        This function processes probability distributions along with extracted features
+        to learn optimal scores and threshold for each distribution.
         
         Args:
             input_dim: Number of classes (dimension of probability vector)
@@ -43,7 +42,7 @@ class ScoringFunction(nn.Module):
         self.input_dim = input_dim
         self.output_dim = output_dim
         
-        # Build the network
+        # Build the main network for scoring
         layers = []
         prev_dim = input_dim
         
@@ -82,6 +81,8 @@ class ScoringFunction(nn.Module):
         
         self.network = nn.Sequential(*layers)
         
+        # Remove threshold prediction network - we'll use calibration set for tau
+        
         self.l2_lambda = config['scoring_function']['l2_lambda']
         
         # Get training dynamics from config
@@ -95,27 +96,104 @@ class ScoringFunction(nn.Module):
         self._init_weights()
         
     def _init_weights(self):
-        """Initialize weights to encourage symmetric behavior across classes"""
-        for module in self.modules():
+        """Initialize weights to encourage learning from 1-p baseline"""
+        for i, module in enumerate(self.modules()):
             if isinstance(module, nn.Linear):
-                # Small random initialization to break symmetry but keep it minimal
-                nn.init.xavier_uniform_(module.weight, gain=self.xavier_init_gain)
+                # Initialize with small weights
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
-                    nn.init.constant_(module.bias, 0.0)
+                    # For the last layer, initialize to output around 0.5 (middle of sigmoid range)
+                    if i == len(list(self.modules())) - 2:  # Last linear layer before sigmoid
+                        nn.init.constant_(module.bias, 0.0)
+                    else:
+                        nn.init.constant_(module.bias, 0.0)
+    
+    def _extract_distribution_features(self, probs):
+        """
+        Extract informative features from probability distribution
+        
+        Args:
+            probs: Probability vectors of shape (batch_size, num_classes)
+            
+        Returns:
+            features: Tensor of shape (batch_size, num_dist_features)
+        """
+        batch_size = probs.shape[0]
+        features = []
+        
+        # 1. Entropy - measures uncertainty
+        # Clamp probabilities to avoid log(0)
+        probs_clamped = torch.clamp(probs, min=1e-8, max=1-1e-8)
+        entropy = -torch.sum(probs_clamped * torch.log(probs_clamped), dim=1)
+        features.append(entropy)
+        
+        # 2. Max probability - confidence level
+        max_prob, _ = torch.max(probs, dim=1)
+        features.append(max_prob)
+        
+        # 3. Top-5 probability sum - concentration in top classes
+        top5_probs, _ = torch.topk(probs, k=min(5, probs.shape[1]), dim=1)
+        top5_sum = torch.sum(top5_probs, dim=1)
+        features.append(top5_sum)
+        
+        # 4. Gini coefficient - inequality measure
+        sorted_probs, _ = torch.sort(probs, dim=1)
+        n = probs.shape[1]
+        index = torch.arange(1, n + 1, dtype=probs.dtype, device=probs.device).unsqueeze(0)
+        sum_probs = torch.sum(sorted_probs, dim=1, keepdim=True)
+        # Avoid division by zero
+        sum_probs = torch.clamp(sum_probs, min=1e-8)
+        gini = (2 * torch.sum(index * sorted_probs, dim=1)) / (n * sum_probs.squeeze()) - (n + 1) / n
+        features.append(gini)
+        
+        # 5. Variance - spread of probabilities
+        mean_prob = torch.mean(probs, dim=1, keepdim=True)
+        variance = torch.mean((probs - mean_prob) ** 2, dim=1)
+        features.append(variance)
+        
+        # 6. Distance from uniform distribution
+        uniform_prob = 1.0 / probs.shape[1]
+        dist_from_uniform = torch.mean(torch.abs(probs - uniform_prob), dim=1)
+        features.append(dist_from_uniform)
+        
+        # 7. Number of classes above threshold (0.01) - sparsity
+        num_above_threshold = torch.sum(probs > 0.01, dim=1).float()
+        features.append(num_above_threshold)
+        
+        # 8. Ratio of max to second max - margin
+        top2_probs, _ = torch.topk(probs, k=min(2, probs.shape[1]), dim=1)
+        if probs.shape[1] > 1:
+            # Clamp ratio to prevent extreme values
+            ratio = torch.clamp(top2_probs[:, 0] / (top2_probs[:, 1] + 1e-8), max=1000.0)
+        else:
+            ratio = torch.ones(batch_size, device=probs.device)
+        features.append(ratio)
+        
+        # 9. Effective number of classes (perplexity)
+        # Clamp entropy to prevent overflow in exp
+        perplexity = torch.exp(torch.clamp(entropy, max=10.0))
+        features.append(perplexity)
+        
+        # Stack all features
+        features = torch.stack(features, dim=1)
+        
+        # Check for NaN/inf and replace with zeros
+        features = torch.nan_to_num(features, nan=0.0, posinf=1000.0, neginf=-1000.0)
+        
+        return features
     
     def forward(self, x):
         """
-        Forward pass through the scoring function.
+        Forward pass through the enhanced scoring function.
         
-        This processes the full probability vector to understand the distribution
-        and outputs scores for each class. The function is made class-agnostic
-        through permutation augmentation during training.
+        This processes probability vectors along with extracted distribution features
+        to produce scores for each class.
         
         Args:
             x: Input tensor of shape (batch_size, num_classes) containing probability vectors
             
         Returns:
-            scores: Output tensor of shape (batch_size, num_classes) containing scores for each class
+            scores: Tensor of shape (batch_size, num_classes) with scores for each class
         """
         # Ensure input has correct shape
         if x.dim() == 1:
@@ -126,9 +204,8 @@ class ScoringFunction(nn.Module):
         if num_classes != self.num_classes:
             raise ValueError(f"Expected {self.num_classes} classes, got {num_classes}")
         
-        # Pass the full probability vector through the network
-        # This allows the MLP to see the entire distribution and learn
-        # relationships between probabilities
+        # Pass probabilities directly through the network
+        # No feature extraction - keep it simple
         scores = self.network(x)
         
         # Add L2 regularization
@@ -143,10 +220,11 @@ class ScoringFunction(nn.Module):
         # Add stability term during training
         if self.training:
             # Small perturbation to test robustness
-            perturbed_x = x + torch.randn_like(x) * 0.01
+            perturbed_x = x + torch.randn_like(x) * self.perturbation_noise
             perturbed_x = perturbed_x / perturbed_x.sum(dim=-1, keepdim=True)
             
             perturbed_scores = self.network(perturbed_x)
+            
             if not isinstance(self.network[-1], nn.Sigmoid):
                 perturbed_scores = torch.clamp(perturbed_scores, min=0.0)
             

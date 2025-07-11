@@ -44,16 +44,16 @@ training:
     enabled: true
     max_norm: 0.5
   loss_weights:
-    coverage: 1.0  # lambda1 - balanced with size
-    size: 3.0      # lambda2 - increased for smaller sets
-    margin: 5    # margin loss weight - increased for better separation
+    coverage: 10.0  # lambda1 - prioritize coverage
+    size: 1.0      # lambda2 - moderate weight for size
+    margin: 0.1    # margin loss weight - reduced to avoid dominating
 
 # Optimizer configuration
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.001  # Start higher, ReduceLROnPlateau will adjust
-    weight_decay: 0.001  # Reduced weight decay
+    lr: 0.001  # Increased learning rate
+    weight_decay: 0.0001  # Reduced weight decay
   scheduler:
     name: 'OneCycleLR'
     params:
@@ -65,9 +65,9 @@ optimizer:
 
 # Model architecture
 scoring_function:
-  hidden_dims: [512, 256, 128]  # Larger network for 1000 classes
+  hidden_dims: [256, 128]  # Simplified network
   dropout: 0.1  # Reduced dropout
-  l2_lambda: 0.001  # Further reduced for extreme values
+  l2_lambda: 0.0  # No L2 regularization for now
   activation:
     name: 'LeakyReLU'
     params:
@@ -86,7 +86,7 @@ tau:
 set_size:
   target: 1
   max: 10.0  # More flexible for 1000 classes
-  margin: 10  # Larger margin for ImageNet
+  margin: 0.1  # Reduced margin to avoid huge losses
 
 # Training dynamics
 training_dynamics:
