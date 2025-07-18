@@ -69,12 +69,13 @@ class Dataset(BaseDataset):
     """
     ImageNet dataset implementation
     
-    Dataset is split into:
-    - Training set: 30,000 samples
-    - Calibration set: 10,000 samples
-    - Test set: 10,000 samples
+    Uses the full ImageNet training and validation datasets:
+    - Training set: Full ImageNet training data (~1.2M samples, 1000 classes)
+    - Calibration set: 50% of validation data (~25k samples, balanced across classes)
+    - Test set: 50% of validation data (~25k samples, balanced across classes)
     
-    All splits maintain class balance with all 1000 classes represented.
+    Training data is loaded from data/imagenet/train/
+    Validation data is loaded from data/imagenet/val/ and split randomly 50-50.
     """
     
     def __init__(self, config):
@@ -113,45 +114,65 @@ class Dataset(BaseDataset):
     
     def setup(self):
         """Setup ImageNet dataset with transforms and splits"""
-        dataset_path = self.config['data_dir']
-        if not os.path.exists(dataset_path):
-            raise FileNotFoundError(f"ImageNet dataset not found at {dataset_path}")
+        dataset_base_path = self.config['data_dir']
+        train_path = os.path.join(dataset_base_path, 'train')
+        val_path = os.path.join(dataset_base_path, 'val')
+        
+        if not os.path.exists(train_path):
+            raise FileNotFoundError(f"ImageNet training dataset not found at {train_path}")
+        if not os.path.exists(val_path):
+            raise FileNotFoundError(f"ImageNet validation dataset not found at {val_path}")
         
         logging.info("Loading ImageNet dataset...")
         
         # Load full training dataset
         train_dataset = ImageNetDataset(
-            root=dataset_path,
+            root=train_path,
             transform=self.train_transform
         )
+        logging.info(f"Loaded training dataset with {len(train_dataset)} samples")
         
-        # Create train split (30,000 samples)
-        train_indices = list(range(len(train_dataset)))
-        random.shuffle(train_indices)
-        train_indices = train_indices[:30000]
-        train_dataset = Subset(train_dataset, train_indices)
-        
-        # Load validation dataset for calibration and test splits
+        # Load validation dataset
         val_dataset = ImageNetDataset(
-            root=dataset_path,
+            root=val_path,
             transform=self.test_transform
         )
+        logging.info(f"Loaded validation dataset with {len(val_dataset)} samples")
         
-        # Create calibration and test splits (10,000 samples each)
-        val_indices = list(range(len(val_dataset)))
-        random.shuffle(val_indices)
+        # Create balanced calibration and test splits from validation data
+        # Group samples by class for balanced splitting
+        class_samples = {}
+        for idx, (_, label) in enumerate(val_dataset.samples):
+            if label not in class_samples:
+                class_samples[label] = []
+            class_samples[label].append(idx)
         
-        cal_indices = val_indices[:10000]
-        test_indices = val_indices[10000:20000]
+        cal_indices = []
+        test_indices = []
+        
+        # For each class, split samples 50-50 randomly
+        random.seed(42)  # For reproducible splits
+        for class_label, samples in class_samples.items():
+            random.shuffle(samples)
+            split_point = len(samples) // 2
+            cal_indices.extend(samples[:split_point])
+            test_indices.extend(samples[split_point:])
+        
+        # Shuffle the final indices to mix classes
+        random.shuffle(cal_indices)
+        random.shuffle(test_indices)
         
         cal_dataset = Subset(val_dataset, cal_indices)
         test_dataset = Subset(val_dataset, test_indices)
         
         # Verify dataset sizes
         logging.info(f"\nDataset sizes:")
-        logging.info(f"Train: {len(train_dataset)}")
-        logging.info(f"Calibration: {len(cal_dataset)}")
-        logging.info(f"Test: {len(test_dataset)}")
+        logging.info(f"Train: {len(train_dataset):,} samples")
+        logging.info(f"Calibration: {len(cal_dataset):,} samples")
+        logging.info(f"Test: {len(test_dataset):,} samples")
+        
+        # Verify class balance
+        logging.info(f"Classes found: {len(val_dataset.classes)}")
         
         # Create dataloaders with verified settings
         self.train_loader = DataLoader(

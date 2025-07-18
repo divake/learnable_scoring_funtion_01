@@ -234,7 +234,7 @@ class ScoringFunction(nn.Module):
             # Add class-agnostic regularization
             # Encourage the model to produce similar score distributions for similar probability patterns
             # This is achieved through permutation augmentation in the trainer
-            self.separation_loss = 0.0  # Will be computed in trainer if needed
+            # The separation loss will be computed in the trainer using self.separation_factor
         else:
             self.stability_loss = 0.0
             self.separation_loss = 0.0

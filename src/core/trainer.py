@@ -175,8 +175,13 @@ class ScoringFunctionTrainer:
             logging.warning(f"Error checking cache validity: {e}")
             return False
     
-    def cache_base_model_outputs(self):
-        """Pre-compute and cache all base model outputs to disk"""
+    def cache_base_model_outputs(self, chunk_size=10000, enable_memory_monitoring=True):
+        """Pre-compute and cache all base model outputs to disk using chunked processing
+        
+        Args:
+            chunk_size: Number of samples to process before saving to disk (default: 10000)
+            enable_memory_monitoring: Whether to enable memory monitoring and cleanup
+        """
         if not self.use_cache:
             logging.info("Caching is disabled in config")
             return
@@ -190,8 +195,14 @@ class ScoringFunctionTrainer:
             self._load_cached_outputs(cache_dir)
             return
             
-        logging.info("Generating new cache for base model outputs...")
+        logging.info("Generating new cache for base model outputs using chunked processing...")
+        logging.info(f"Chunk size: {chunk_size} samples")
         self.base_model.eval()
+        
+        # Import memory monitoring utilities
+        import gc
+        import psutil
+        import tempfile
         
         # Process each dataset
         for name, loader in [
@@ -200,33 +211,153 @@ class ScoringFunctionTrainer:
             ('test', self.test_loader)
         ]:
             logging.info(f"Processing {name} dataset...")
-            all_probs = []
-            all_targets = []
+            
+            # Create temporary directory for chunks
+            temp_dir = tempfile.mkdtemp(prefix=f'cache_{name}_')
+            chunk_files_probs = []
+            chunk_files_targets = []
+            
+            # Process in chunks
+            chunk_probs = []
+            chunk_targets = []
+            samples_processed = 0
+            chunk_idx = 0
+            
+            # Monitor initial memory
+            if enable_memory_monitoring:
+                process = psutil.Process()
+                initial_memory = process.memory_info().rss / 1024 / 1024 / 1024  # GB
+                logging.info(f"Initial memory usage: {initial_memory:.2f} GB")
             
             with torch.no_grad():
-                for inputs, targets in tqdm(loader, desc=f"Caching {name}"):
+                for batch_idx, (inputs, targets) in enumerate(tqdm(loader, desc=f"Caching {name}")):
                     inputs = inputs.to(self.device)
                     
                     # Get softmax probabilities from base model
                     logits = self.base_model(inputs)
                     probs = torch.softmax(logits, dim=1)
                     
+                    # Move to CPU immediately to free GPU memory
+                    probs = probs.cpu()
+                    del logits  # Explicitly delete to free memory
+                    
                     # Store probabilities and targets
-                    all_probs.append(probs.cpu())
-                    all_targets.append(targets)
+                    chunk_probs.append(probs)
+                    chunk_targets.append(targets)
+                    samples_processed += len(targets)
+                    
+                    # Save chunk when reaching chunk_size or at the end
+                    if samples_processed >= chunk_size or batch_idx == len(loader) - 1:
+                        # Concatenate current chunk
+                        chunk_probs_tensor = torch.cat(chunk_probs, dim=0)
+                        chunk_targets_tensor = torch.cat(chunk_targets, dim=0)
+                        
+                        # Save chunk to temporary file
+                        chunk_probs_path = os.path.join(temp_dir, f'probs_chunk_{chunk_idx}.pt')
+                        chunk_targets_path = os.path.join(temp_dir, f'targets_chunk_{chunk_idx}.pt')
+                        
+                        torch.save(chunk_probs_tensor, chunk_probs_path)
+                        torch.save(chunk_targets_tensor, chunk_targets_path)
+                        
+                        chunk_files_probs.append(chunk_probs_path)
+                        chunk_files_targets.append(chunk_targets_path)
+                        
+                        logging.info(f"Saved chunk {chunk_idx} with {len(chunk_targets_tensor)} samples")
+                        
+                        # Clear memory
+                        del chunk_probs_tensor, chunk_targets_tensor
+                        chunk_probs = []
+                        chunk_targets = []
+                        samples_processed = 0
+                        chunk_idx += 1
+                        
+                        # Force garbage collection
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        
+                        # Monitor memory after chunk
+                        if enable_memory_monitoring:
+                            current_memory = process.memory_info().rss / 1024 / 1024 / 1024  # GB
+                            logging.info(f"Memory usage after chunk {chunk_idx}: {current_memory:.2f} GB")
             
-            # Concatenate all batches
-            probs = torch.cat(all_probs, dim=0)
-            targets = torch.cat(all_targets, dim=0)
+            # Merge all chunks into final files
+            logging.info(f"Merging {len(chunk_files_probs)} chunks for {name} dataset...")
             
-            # Save to disk
-            probs_path = os.path.join(cache_dir, f'{name}_probs.pt')
-            targets_path = os.path.join(cache_dir, f'{name}_targets.pt')
+            # Load and concatenate all chunks
+            final_probs = []
+            final_targets = []
             
-            torch.save(probs, probs_path)
-            torch.save(targets, targets_path)
+            for i, (probs_file, targets_file) in enumerate(zip(chunk_files_probs, chunk_files_targets)):
+                chunk_probs = torch.load(probs_file)
+                chunk_targets = torch.load(targets_file)
+                final_probs.append(chunk_probs)
+                final_targets.append(chunk_targets)
+                
+                # Delete chunk files immediately after loading
+                os.remove(probs_file)
+                os.remove(targets_file)
+                
+                # Periodically concatenate and save to avoid memory buildup
+                if (i + 1) % 5 == 0 or i == len(chunk_files_probs) - 1:
+                    if len(final_probs) > 0:
+                        # Concatenate accumulated chunks
+                        accumulated_probs = torch.cat(final_probs, dim=0)
+                        accumulated_targets = torch.cat(final_targets, dim=0)
+                        
+                        # Save or append to final file
+                        probs_path = os.path.join(cache_dir, f'{name}_probs.pt')
+                        targets_path = os.path.join(cache_dir, f'{name}_targets.pt')
+                        
+                        if i == len(chunk_files_probs) - 1:
+                            # Last iteration - save final result
+                            if os.path.exists(probs_path):
+                                # Append to existing data
+                                existing_probs = torch.load(probs_path)
+                                existing_targets = torch.load(targets_path)
+                                final_probs_tensor = torch.cat([existing_probs, accumulated_probs], dim=0)
+                                final_targets_tensor = torch.cat([existing_targets, accumulated_targets], dim=0)
+                                del existing_probs, existing_targets
+                            else:
+                                final_probs_tensor = accumulated_probs
+                                final_targets_tensor = accumulated_targets
+                            
+                            torch.save(final_probs_tensor, probs_path)
+                            torch.save(final_targets_tensor, targets_path)
+                            logging.info(f"Saved final cache for {name}: {len(final_targets_tensor)} samples")
+                        else:
+                            # Intermediate save
+                            if os.path.exists(probs_path):
+                                # Append to existing
+                                existing_probs = torch.load(probs_path)
+                                existing_targets = torch.load(targets_path)
+                                merged_probs = torch.cat([existing_probs, accumulated_probs], dim=0)
+                                merged_targets = torch.cat([existing_targets, accumulated_targets], dim=0)
+                                del existing_probs, existing_targets
+                            else:
+                                merged_probs = accumulated_probs
+                                merged_targets = accumulated_targets
+                            
+                            torch.save(merged_probs, probs_path)
+                            torch.save(merged_targets, targets_path)
+                        
+                        # Clear memory
+                        del accumulated_probs, accumulated_targets
+                        if 'final_probs_tensor' in locals():
+                            del final_probs_tensor, final_targets_tensor
+                        if 'merged_probs' in locals():
+                            del merged_probs, merged_targets
+                        final_probs = []
+                        final_targets = []
+                        gc.collect()
             
-            logging.info(f"Cached {len(targets)} samples for {name} dataset")
+            # Clean up temporary directory
+            os.rmdir(temp_dir)
+            
+            # Final memory cleanup
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         # Save metadata
         self._save_cache_metadata(cache_dir)
@@ -829,8 +960,12 @@ class ScoringFunctionTrainer:
                     (1 - scores) * torch.log(1 - scores + 1e-8)
                 )
                 
-                # Combined separation loss with entropy term
-                separation_loss = true_score_loss + false_score_loss + 0.1 * entropy_penalty
+                # Add binary loss to directly penalize middle values
+                # This creates a strong penalty for scores around 0.5
+                binary_penalty = torch.mean(torch.exp(-10 * (scores - 0.5) ** 2))
+                
+                # Combined separation loss with entropy and binary terms
+                separation_loss = true_score_loss + false_score_loss + 0.5 * entropy_penalty + binary_penalty
                 self.scoring_fn.separation_loss = self.scoring_fn.separation_factor * separation_loss
             else:
                 separation_loss = 0.0
