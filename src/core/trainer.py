@@ -373,7 +373,7 @@ class ScoringFunctionTrainer:
     
     def _load_cached_outputs(self, cache_dir):
         """Load cached outputs from disk and create new data loaders"""
-        from torch.utils.data import TensorDataset, DataLoader
+        from torch.utils.data import TensorDataset, DataLoader, Subset
         
         self.cached_datasets = {}
         self.cached_loaders = {}
@@ -391,6 +391,18 @@ class ScoringFunctionTrainer:
             
             # Create dataset
             dataset = TensorDataset(probs, targets)
+            
+            # Apply subset sampling for training data if configured
+            if name == 'train':
+                subset_fraction = self.config.get('training_subset_fraction', 1.0)
+                if subset_fraction < 1.0:
+                    total_samples = len(dataset)
+                    subset_size = int(total_samples * subset_fraction)
+                    # Random subset indices
+                    indices = torch.randperm(total_samples)[:subset_size]
+                    dataset = Subset(dataset, indices)
+                    logging.info(f"Using {subset_fraction*100:.0f}% of training data: {subset_size}/{total_samples} samples")
+            
             self.cached_datasets[name] = dataset
             
             # Create dataloader
@@ -945,27 +957,16 @@ class ScoringFunctionTrainer:
             # Add separation loss to encourage true scores near 0 and false scores near 1
             # This helps create the desired separation in the score distributions
             if hasattr(self.scoring_fn, 'separation_factor'):
-                # Push true scores toward 0 with stronger penalty for larger values
-                # Using power of 4 for more aggressive push toward 0
-                true_score_loss = torch.mean(target_scores ** 4)
+                # Push true scores toward 0 with moderate penalty
+                # Using power of 2 instead of 4 for gentler push
+                true_score_loss = torch.mean(target_scores ** 2)
                 
-                # Push false scores toward 1 with stronger penalty for smaller values
-                # Using power of 4 for more aggressive push toward 1
-                false_score_loss = torch.mean((1.0 - false_scores) ** 4)
+                # Push false scores toward 1 with moderate penalty
+                # Using power of 2 instead of 4 for gentler push
+                false_score_loss = torch.mean((1.0 - false_scores) ** 2)
                 
-                # Add entropy-like term to encourage extreme values
-                # This penalizes scores that are in the middle (around 0.5)
-                entropy_penalty = -torch.mean(
-                    scores * torch.log(scores + 1e-8) + 
-                    (1 - scores) * torch.log(1 - scores + 1e-8)
-                )
-                
-                # Add binary loss to directly penalize middle values
-                # This creates a strong penalty for scores around 0.5
-                binary_penalty = torch.mean(torch.exp(-10 * (scores - 0.5) ** 2))
-                
-                # Combined separation loss with entropy and binary terms
-                separation_loss = true_score_loss + false_score_loss + 0.5 * entropy_penalty + binary_penalty
+                # Simplified separation loss without aggressive entropy/binary penalties
+                separation_loss = true_score_loss + false_score_loss
                 self.scoring_fn.separation_loss = self.scoring_fn.separation_factor * separation_loss
             else:
                 separation_loss = 0.0

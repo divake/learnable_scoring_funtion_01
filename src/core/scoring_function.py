@@ -97,16 +97,14 @@ class ScoringFunction(nn.Module):
         
     def _init_weights(self):
         """Initialize weights to encourage learning from 1-p baseline"""
-        for i, module in enumerate(self.modules()):
+        modules_list = list(self.modules())
+        for i, module in enumerate(modules_list):
             if isinstance(module, nn.Linear):
-                # Initialize with small weights
-                nn.init.xavier_uniform_(module.weight, gain=0.1)
+                # Initialize with very small weights to start near identity-like function
+                nn.init.xavier_uniform_(module.weight, gain=0.01)
                 if module.bias is not None:
-                    # For the last layer, initialize to output around 0.5 (middle of sigmoid range)
-                    if i == len(list(self.modules())) - 2:  # Last linear layer before sigmoid
-                        nn.init.constant_(module.bias, 0.0)
-                    else:
-                        nn.init.constant_(module.bias, 0.0)
+                    # Initialize bias to small negative values to start with lower scores
+                    nn.init.constant_(module.bias, -0.1)
     
     def _extract_distribution_features(self, probs):
         """
