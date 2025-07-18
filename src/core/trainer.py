@@ -6,6 +6,7 @@ import torch.optim as optim
 from tqdm import tqdm
 import logging
 import os
+import glob
 import numpy as np
 import matplotlib.pyplot as plt
 import json
@@ -55,6 +56,9 @@ class ScoringFunctionTrainer:
         
         # Get gradient clipping config
         self.grad_clip_config = config['training']['grad_clip']
+        
+        # Initialize model saving tracking
+        self.best_model_filename = None
         
         # Initialize caching attributes
         self.is_cached = False
@@ -475,21 +479,89 @@ class ScoringFunctionTrainer:
         if ece is not None:
             history['ece_values'].append(ece)
     
-    def _save_model(self, train_loss, best_loss, set_size, set_size_config, save_dir):
-        """Save model if it's the best so far"""
-        if train_loss < best_loss and set_size < set_size_config['max']:
-            best_loss = train_loss
+    def _save_metrics_to_csv_incremental(self, history, plot_dir):
+        """Save metrics to CSV incrementally after each epoch"""
+        import pandas as pd
+        
+        dataset_name = self.config['dataset']['name']
+        csv_path = os.path.join(plot_dir, f'{dataset_name}_metrics.csv')
+        
+        # Create DataFrame with all metrics
+        data = {
+            'epoch': history['epochs'],
+            'auroc': history['auroc_values'],
+            'ece': history['ece_values'],
+            'coverage': history['val_coverages'],
+            'set_size': history['val_sizes'],
+            'non_empty_set_size': history.get('val_non_empty_sizes', history['val_sizes']),  # Fallback if not available
+            'efficiency': [cov/size if size > 0 else 0 for cov, size in zip(history['val_coverages'], history['val_sizes'])]
+        }
+        
+        df = pd.DataFrame(data)
+        
+        # Save to CSV (overwrite each time to avoid duplicates)
+        df.to_csv(csv_path, index=False)
+        logging.debug(f"Updated metrics CSV: {csv_path}")
+    
+    def _save_model(self, val_coverage, val_size, best_set_size, save_dir, epoch):
+        """
+        Save model based on validation metrics.
+        Only saves when coverage is between 88-92% and set size is smaller than previous best.
+        Replaces any previous best model for the dataset.
+        
+        Args:
+            val_coverage: Validation coverage (e.g., 0.90)
+            val_size: Validation set size (e.g., 4.96)
+            best_set_size: Previous best set size
+            save_dir: Directory to save model
+            epoch: Current epoch number
             
-            # Create dataset-specific filename
-            dataset_name = self.config['dataset']['name']
-            model_filename = f'scoring_function_{dataset_name}_best.pth'
+        Returns:
+            Tuple of (updated best_set_size, saved_filename or None)
+        """
+        # Check if coverage is within acceptable range (88-92%)
+        if 0.88 <= val_coverage <= 0.92:
+            # Check if this is a better (smaller) set size
+            if val_size < best_set_size:
+                dataset_name = self.config['dataset']['name']
+                
+                # First, remove any existing best model for this dataset
+                existing_pattern = os.path.join(save_dir, f'scoring_function_{dataset_name}_*_*_*epoch.pth')
+                for old_model in glob.glob(existing_pattern):
+                    os.remove(old_model)
+                    logging.info(f"Removed previous best model: {os.path.basename(old_model)}")
+                
+                # Create new filename with metrics and epoch
+                model_filename = f'scoring_function_{dataset_name}_{val_coverage:.2f}_{val_size:.2f}_{epoch}epoch.pth'
+                model_path = os.path.join(save_dir, model_filename)
+                
+                torch.save(
+                    self.scoring_fn.state_dict(),
+                    model_path
+                )
+                
+                # Also save as 'best' for backward compatibility
+                best_filename = f'scoring_function_{dataset_name}_best.pth'
+                best_path = os.path.join(save_dir, best_filename)
+                torch.save(
+                    self.scoring_fn.state_dict(),
+                    best_path
+                )
+                
+                logging.info(f"Saved new best model for {dataset_name}:")
+                logging.info(f"  Coverage: {val_coverage:.4f} (within 88-92% range)")
+                logging.info(f"  Set Size: {val_size:.4f} (improved from {best_set_size:.4f})")
+                logging.info(f"  Epoch: {epoch}")
+                logging.info(f"  Filename: {model_filename}")
+                
+                # Store the filename for the final summary
+                self.best_model_filename = model_filename
+                
+                return val_size, model_filename
+        else:
+            logging.debug(f"Coverage {val_coverage:.4f} outside 88-92% range, not saving")
             
-            torch.save(
-                self.scoring_fn.state_dict(),
-                os.path.join(save_dir, model_filename)
-            )
-            logging.info(f"Saved new best model for {dataset_name}")
-        return best_loss
+        return best_set_size, None
     
     def _calculate_target_coverage_metrics(self, history, target_coverage=0.9, tolerance=None):
         if tolerance is None:
@@ -615,7 +687,7 @@ class ScoringFunctionTrainer:
         
         optimizer, scheduler = self._setup_optimizer(num_epochs)
         history = self._init_history()
-        best_loss = float('inf')
+        best_set_size = float('inf')  # Initialize best set size to infinity
         
         for epoch in range(num_epochs):
             current_lr = optimizer.param_groups[0]['lr']
@@ -659,6 +731,9 @@ class ScoringFunctionTrainer:
                 val_coverage, val_size, tau, auroc, ece, val_non_empty_size
             )
             
+            # Save metrics to CSV incrementally
+            self._save_metrics_to_csv_incremental(history, plot_dir)
+            
             # Update plots
             self._update_plots(history, tau, save_dir, plot_dir)
             
@@ -666,9 +741,9 @@ class ScoringFunctionTrainer:
             if epoch % 5 == 0:
                 self._check_class_agnostic_behavior()
             
-            # Save best model
-            best_loss = self._save_model(
-                train_loss, best_loss, train_size, set_size_config, save_dir
+            # Save best model based on validation metrics
+            best_set_size, saved_filename = self._save_model(
+                val_coverage, val_size, best_set_size, save_dir, epoch + 1
             )
         
         # Save final metrics to CSV
@@ -740,6 +815,14 @@ class ScoringFunctionTrainer:
             logging.info(f"  Set Size: {history['val_sizes'][closest_idx]:.4f}")
         
         logging.info("Training completed!")
+        
+        # Report best model saved
+        if best_set_size < float('inf') and hasattr(self, 'best_model_filename'):
+            logging.info(f"\nBest model saved:")
+            logging.info(f"  Filename: {self.best_model_filename}")
+            logging.info(f"  Final set size: {best_set_size:.4f}")
+        else:
+            logging.info("\nNo model saved - coverage never reached 88-92% range")
     
     def _calculate_advanced_metrics(self, tau):
         """Calculate AUROC and ECE metrics on the test set"""
