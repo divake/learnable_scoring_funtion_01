@@ -5,9 +5,10 @@ target_coverage: 0.9
 # Directory paths
 data_dir: data  # Directory where datasets are stored
 base_dir: .     # Base directory for relative paths
-plot_dir: plots/conformal
-log_dir: logs/conformal
-result_dir: results/conformal
+# Unified output directory - all results will go to results_static_conformal/{dataset}/
+plot_dir: results_static_conformal
+log_dir: results_static_conformal
+result_dir: results_static_conformal
 
 # Default dataset configuration
 dataset:

@@ -111,24 +111,19 @@ def setup_logging(config: Dict[str, Any]) -> None:
     Args:
         config: Configuration dictionary
     """
-    log_dir = config.get('log_dir', 'logs/conformal')
-    os.makedirs(log_dir, exist_ok=True)
-    
-    log_file = os.path.join(log_dir, f'conformal_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.log')
-    
     log_level = getattr(logging, config.get('logging', {}).get('level', 'INFO'))
     log_format = config.get('logging', {}).get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     
+    # Only setup console logging here - file logging will be handled per dataset
     logging.basicConfig(
         level=log_level,
         format=log_format,
         handlers=[
-            logging.FileHandler(log_file),
             logging.StreamHandler()
         ]
     )
     
-    logging.info(f"Logging initialized. Log file: {log_file}")
+    logging.info("Logging initialized for console output")
 
 def get_dataset_config(config: Dict[str, Any], dataset_name: str) -> Dict[str, Any]:
     """
@@ -203,9 +198,16 @@ class BaseScorer(ABC):
             for key, value in config['scoring_functions'][scorer_name].items():
                 setattr(self, key, value)
         
-        # Set up directories for plots and logs
-        self.plot_dir = os.path.join(config.get('plot_dir', 'plots/conformal'), self.__class__.__name__)
-        os.makedirs(self.plot_dir, exist_ok=True)
+        # Set up unified directory structure for results
+        dataset_name = config['dataset']['name']
+        self.base_output_dir = os.path.join(config.get('base_dir', '.'), 'results_static_conformal', dataset_name)
+        os.makedirs(self.base_output_dir, exist_ok=True)
+        
+        # Set plot directory within the unified structure
+        self.plot_dir = self.base_output_dir
+        
+        # Set up log directory within the unified structure
+        self.log_dir = self.base_output_dir
         
         # Initialize dataset if not provided
         if dataset is None:
@@ -434,7 +436,7 @@ class BaseScorer(ABC):
         plt.grid(True, alpha=0.3)
         
         # Save the plot
-        plot_path = os.path.join(self.plot_dir, f'{dataset_name}_scoring_function.png')
+        plot_path = os.path.join(self.plot_dir, f'{self.__class__.__name__}_{dataset_name}_scoring_function.png')
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -484,7 +486,7 @@ class BaseScorer(ABC):
             plt.xlim(min_score - 0.2, max_score + 0.2)
         
         # Save the plot
-        plot_path = os.path.join(self.plot_dir, f'{dataset_name}_score_distribution.png')
+        plot_path = os.path.join(self.plot_dir, f'{self.__class__.__name__}_{dataset_name}_score_distribution.png')
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -508,7 +510,7 @@ class BaseScorer(ABC):
             plot_roc_curve(y_true, y_scores, title=f'Receiver Operating Characteristic - {dataset_name}', ax=ax)
             
             # Save the plot
-            plot_path = os.path.join(self.plot_dir, f'{dataset_name}_roc_curve.png')
+            plot_path = os.path.join(self.plot_dir, f'{self.__class__.__name__}_{dataset_name}_roc_curve.png')
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
             plt.close()
             
@@ -1386,6 +1388,108 @@ class Sparsemax_Scorer(BaseScorer):
 
 # ==================== Runner Functions ====================
 
+def create_unified_csv_summary(dataset_results: Dict[str, Dict[str, Any]], dataset_name: str, config: Dict[str, Any]) -> None:
+    """
+    Create a unified CSV summary for a single dataset with all scoring functions.
+    
+    Args:
+        dataset_results: Results for all scoring functions for this dataset
+        dataset_name: Name of the dataset
+        config: Configuration dictionary
+    """
+    # Setup output directory
+    base_output_dir = os.path.join(config.get('base_dir', '.'), 'results_static_conformal', dataset_name.replace('vlm_', '').split('_')[0])
+    os.makedirs(base_output_dir, exist_ok=True)
+    
+    # Prepare data for CSV
+    csv_data = []
+    
+    for scoring_function, results in dataset_results.items():
+        if isinstance(results, dict) and "error" not in results:
+            row = {
+                'Dataset': dataset_name,
+                'Scoring_Function': scoring_function,
+                'Target_Coverage': results.get('target_coverage', 'N/A'),
+                'Empirical_Coverage': results.get('empirical_coverage', 'N/A'),
+                'Average_Set_Size_Excluding_Empty': results.get('average_set_size', 'N/A'),
+                'Average_Set_Size_Including_Empty': results.get('average_set_size_with_empty', 'N/A'),
+                'Median_Set_Size': results.get('median_set_size', 'N/A'),
+                'Min_Set_Size': results.get('set_size_min', 'N/A'),
+                'Max_Set_Size': results.get('set_size_max', 'N/A'),
+                'Set_Size_Std': results.get('set_size_std', 'N/A'),
+                'Empty_Sets_Count': results.get('empty_sets', 'N/A'),
+                'Empty_Sets_Percentage': results.get('empty_set_percentage', 'N/A'),
+                'AUROC_Scoring_Function': results.get('score_auroc', 'N/A'),
+                'AUROC_Base_Model': results.get('base_auroc', 'N/A'),
+                'Tau_Threshold': results.get('tau', 'N/A')
+            }
+            csv_data.append(row)
+        elif "error" in results:
+            row = {
+                'Dataset': dataset_name,
+                'Scoring_Function': scoring_function,
+                'Target_Coverage': 'ERROR',
+                'Empirical_Coverage': 'ERROR',
+                'Average_Set_Size_Excluding_Empty': 'ERROR',
+                'Average_Set_Size_Including_Empty': 'ERROR',
+                'Median_Set_Size': 'ERROR',
+                'Min_Set_Size': 'ERROR',
+                'Max_Set_Size': 'ERROR',
+                'Set_Size_Std': 'ERROR',
+                'Empty_Sets_Count': 'ERROR',
+                'Empty_Sets_Percentage': 'ERROR',
+                'AUROC_Scoring_Function': 'ERROR',
+                'AUROC_Base_Model': 'ERROR',
+                'Tau_Threshold': 'ERROR'
+            }
+            csv_data.append(row)
+    
+    if csv_data:
+        # Create DataFrame and save as CSV
+        df = pd.DataFrame(csv_data)
+        csv_file = os.path.join(base_output_dir, f'{dataset_name}_static_conformal_results.csv')
+        df.to_csv(csv_file, index=False)
+        
+        # Create a readable JSON summary (formatted like a table)
+        json_summary = {
+            "dataset": dataset_name,
+            "target_coverage": csv_data[0].get('Target_Coverage', 'N/A') if csv_data else 'N/A',
+            "summary": "Static Conformal Prediction Results",
+            "scoring_functions": {}
+        }
+        
+        for row in csv_data:
+            scoring_func = row['Scoring_Function']
+            json_summary["scoring_functions"][scoring_func] = {
+                "empirical_coverage": row['Empirical_Coverage'],
+                "average_set_size_excluding_empty": row['Average_Set_Size_Excluding_Empty'],
+                "average_set_size_including_empty": row['Average_Set_Size_Including_Empty'],
+                "median_set_size": row['Median_Set_Size'],
+                "min_set_size": row['Min_Set_Size'],
+                "max_set_size": row['Max_Set_Size'],
+                "set_size_std": row['Set_Size_Std'],
+                "empty_sets_count": row['Empty_Sets_Count'],
+                "empty_sets_percentage": row['Empty_Sets_Percentage'],
+                "auroc_scoring_function": row['AUROC_Scoring_Function'],
+                "auroc_base_model": row['AUROC_Base_Model'],
+                "tau_threshold": row['Tau_Threshold']
+            }
+        
+        # Save readable JSON summary
+        json_summary_file = os.path.join(base_output_dir, f'{dataset_name}_static_conformal_summary.json')
+        with open(json_summary_file, 'w') as f:
+            json.dump(json_summary, f, indent=4)
+        
+        # Also save individual JSON results for each scoring function
+        for scoring_function, results in dataset_results.items():
+            json_file = os.path.join(base_output_dir, f'{scoring_function}_{dataset_name}_results.json')
+            with open(json_file, 'w') as f:
+                json.dump(results, f, indent=4)
+        
+        logging.info(f"Unified CSV summary saved to {csv_file}")
+        logging.info(f"Readable JSON summary saved to {json_summary_file}")
+        logging.info(f"Individual JSON results saved in {base_output_dir}")
+
 def create_comparison_report(results: Dict[str, Dict[str, Dict[str, Any]]], output_dir: str, target_coverage: float = 0.9) -> Dict[str, str]:
     """
     Create a comprehensive comparison report with multiple visualizations.
@@ -1639,16 +1743,12 @@ def run_dataset(config: Dict[str, Any], dataset_name: str, scoring_name: str) ->
     # Update config with dataset name
     dataset_config = get_dataset_config(config, dataset_name)
     
-    # Setup logging for this dataset
-    log_dir = os.path.join(config.get('log_dir', 'logs/conformal'), dataset_name)
-    os.makedirs(log_dir, exist_ok=True)
+    # Setup unified directory structure
+    base_output_dir = os.path.join(config.get('base_dir', '.'), 'results_static_conformal', dataset_name)
+    os.makedirs(base_output_dir, exist_ok=True)
     
-    # For VLM, include model name in log file
-    if dataset_name == 'vlm':
-        model_name = dataset_config['dataset'].get('default_model', 'default')
-        log_file = os.path.join(log_dir, f'{scoring_name.lower()}_evaluation_{dataset_name}_{model_name}.log')
-    else:
-        log_file = os.path.join(log_dir, f'{scoring_name.lower()}_evaluation_{dataset_name}.log')
+    # Setup unified logging
+    log_file = os.path.join(base_output_dir, f'{dataset_name}_static_conformal.log')
     
     file_handler = logging.FileHandler(log_file)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
@@ -1701,21 +1801,7 @@ def run_dataset(config: Dict[str, Any], dataset_name: str, scoring_name: str) ->
                 else:
                     json_results[key] = value
             
-            # Save results
-            result_dir = os.path.join(config.get('result_dir', 'results/conformal'), dataset_name)
-            os.makedirs(result_dir, exist_ok=True)
-            
-            # For VLM, include model name in results file
-            if dataset_name == 'vlm':
-                model_name = dataset_config['dataset'].get('default_model', 'default')
-                results_file = os.path.join(result_dir, f'{scoring_name.lower()}_results_{dataset_name}_{model_name}.json')
-            else:
-                results_file = os.path.join(result_dir, f'{scoring_name.lower()}_results_{dataset_name}.json')
-                
-            with open(results_file, 'w') as f:
-                json.dump(json_results, f, indent=4)
-            
-            logging.info(f"Results saved to {results_file}")
+            logging.info(f"Results saved in unified directory: {base_output_dir}")
             logging.info(f"=== Completed evaluation for {dataset_desc} dataset ===\n")
             
             return json_results
@@ -1913,32 +1999,16 @@ def main():
                     logging.error(f"Traceback: {traceback.format_exc()}")
                     all_results[dataset][scoring] = {"error": str(e)}
     
-    # Save summary of all results
-    summary_dir = os.path.join(config.get('result_dir', 'results/conformal'), 'summary')
-    os.makedirs(summary_dir, exist_ok=True)
+    # Create unified CSV summary for each dataset
+    for dataset in datasets:
+        if dataset in all_results:
+            create_unified_csv_summary(all_results[dataset], dataset, config)
     
-    summary_file = os.path.join(summary_dir, 'conformal_summary.json')
-    with open(summary_file, 'w') as f:
-        json.dump(all_results, f, indent=4)
-    
-    logging.info(f"Summary results saved to {summary_file}")
-    
-    # Generate comparison report if multiple experiments were run
-    if len(datasets) > 1 or len(scoring_functions) > 1 or len(vlm_models) > 1:
-        try:
-            target_coverage = config.get('target_coverage', 0.9)
-            plots = create_comparison_report(
-                all_results, 
-                config.get('plot_dir', 'plots/conformal'),
-                target_coverage
-            )
-            if plots:
-                logging.info(f"Comparison report generated. Plots: {', '.join(plots.keys())}")
-            else:
-                logging.warning("No comparison report generated - no valid results")
-        except Exception as e:
-            logging.error(f"Error generating comparison report: {str(e)}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
+    # Handle VLM results separately
+    if 'vlm' in all_results:
+        for model_name, model_results in all_results['vlm'].items():
+            for dataset_name, dataset_results in model_results.items():
+                create_unified_csv_summary(dataset_results, f'vlm_{model_name}_{dataset_name}', config)
     
     # Print summary table
     logging.info(f"\n=== Conformal Prediction Evaluation Summary ===")
