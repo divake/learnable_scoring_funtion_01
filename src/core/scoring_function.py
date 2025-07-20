@@ -72,12 +72,16 @@ class ScoringFunction(nn.Module):
         final_activation_config = config['scoring_function']['final_activation']
         if final_activation_config['name'] == 'Softplus':
             final_activation = nn.Softplus(**final_activation_config['params'])
+            layers.append(final_activation)
         elif final_activation_config['name'] == 'Sigmoid':
             # Sigmoid ensures output is in [0, 1] range
             final_activation = nn.Sigmoid()
+            layers.append(final_activation)
+        elif final_activation_config['name'] == 'None':
+            # No final activation - we'll use min-max normalization instead
+            pass
         else:
             raise ValueError(f"Unsupported final activation: {final_activation_config['name']}")
-        layers.append(final_activation)
         
         self.network = nn.Sequential(*layers)
         
@@ -204,16 +208,24 @@ class ScoringFunction(nn.Module):
         
         # Pass probabilities directly through the network
         # No feature extraction - keep it simple
-        scores = self.network(x)
+        raw_scores = self.network(x)
+        
+        # Apply min-max normalization per sample instead of sigmoid
+        # This ensures we always use the full [0, 1] range
+        # and prevents collapse to a single value
+        
+        # Compute min and max for each sample across all classes
+        scores_min = raw_scores.min(dim=1, keepdim=True)[0]
+        scores_max = raw_scores.max(dim=1, keepdim=True)[0]
+        
+        # Add small epsilon to prevent division by zero
+        # In case all scores are identical (shouldn't happen with proper init)
+        epsilon = 1e-8
+        scores = (raw_scores - scores_min) / (scores_max - scores_min + epsilon)
         
         # Add L2 regularization
         l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
         self.l2_reg = self.l2_lambda * l2_reg
-        
-        # No need to clamp if using sigmoid activation
-        # For other activations, ensure scores are non-negative
-        if not isinstance(self.network[-1], nn.Sigmoid):
-            scores = torch.clamp(scores, min=0.0)
         
         # Add stability term during training
         if self.training:
@@ -221,10 +233,12 @@ class ScoringFunction(nn.Module):
             perturbed_x = x + torch.randn_like(x) * self.perturbation_noise
             perturbed_x = perturbed_x / perturbed_x.sum(dim=-1, keepdim=True)
             
-            perturbed_scores = self.network(perturbed_x)
+            perturbed_raw_scores = self.network(perturbed_x)
             
-            if not isinstance(self.network[-1], nn.Sigmoid):
-                perturbed_scores = torch.clamp(perturbed_scores, min=0.0)
+            # Apply same min-max normalization to perturbed scores
+            perturbed_min = perturbed_raw_scores.min(dim=1, keepdim=True)[0]
+            perturbed_max = perturbed_raw_scores.max(dim=1, keepdim=True)[0]
+            perturbed_scores = (perturbed_raw_scores - perturbed_min) / (perturbed_max - perturbed_min + epsilon)
             
             # Stability loss encourages consistent outputs
             self.stability_loss = self.stability_factor * torch.mean((scores - perturbed_scores)**2)
