@@ -2,6 +2,12 @@
 device: 1  # GPU=0/1 and CPU=-1
 target_coverage: 0.9
 
+# Noise configuration for robustness testing
+noise_type: "logit_gaussian"  # Options: "logit_gaussian", "temperature", "quantization", "mc_dropout"
+noise_std: 3.0  # High noise for dramatic results (Sparsemax now fixed)
+temperature_range: [0.7, 1.5]  # For temperature noise (realistic calibration range)
+mc_samples: 5  # For MC dropout
+
 # Directory paths
 data_dir: data  # Directory where datasets are stored
 base_dir: .     # Base directory for relative paths

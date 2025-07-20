@@ -361,6 +361,55 @@ class BaseScorer(ABC):
             probabilities = self.cached_data['cal_probs'].to(self.device)
             targets = self.cached_data['cal_targets'].to(self.device)
             
+            # Add realistic noise if specified
+            noise_std = self.config.get('noise_std', 0.0)
+            noise_type = self.config.get('noise_type', 'logit_gaussian')
+            
+            if noise_std > 0:
+                epsilon = 1e-8  # Small value to avoid log(0)
+                original_entropy = torch.mean(-torch.sum(probabilities * torch.log(probabilities + epsilon), dim=1))
+                
+                if noise_type == 'temperature':
+                    print(f"\n🌡️ ADDING TEMPERATURE NOISE: std={noise_std} to calibration data")
+                    print(f"   Original prob range: [{probabilities.min():.4f}, {probabilities.max():.4f}]")
+                    
+                    # Temperature scaling with noise (more realistic)
+                    logits = torch.log(probabilities + epsilon)
+                    temp_range = self.config.get('temperature_range', [0.8, 1.2])
+                    temperature = 1.0 + (torch.rand(1).item() - 0.5) * 2 * noise_std
+                    temperature = torch.clamp(torch.tensor(temperature), temp_range[0], temp_range[1]).item()
+                    
+                    scaled_logits = logits / temperature
+                    probabilities = torch.nn.functional.softmax(scaled_logits, dim=1)
+                    
+                elif noise_type == 'quantization':
+                    print(f"\n⚙️ ADDING QUANTIZATION NOISE: std={noise_std} to calibration data")
+                    print(f"   Original prob range: [{probabilities.min():.4f}, {probabilities.max():.4f}]")
+                    
+                    # Simulate quantization noise (edge deployment)
+                    logits = torch.log(probabilities + epsilon)
+                    quantization_step = noise_std * 0.1  # Realistic quantization
+                    quantized_logits = torch.round(logits / quantization_step) * quantization_step
+                    quantized_logits += torch.randn_like(logits) * quantization_step * 0.1
+                    
+                    probabilities = torch.nn.functional.softmax(quantized_logits, dim=1)
+                    
+                else:  # Default: logit_gaussian
+                    print(f"\n🔊 ADDING LOGIT GAUSSIAN NOISE: std={noise_std} to calibration data")
+                    print(f"   Original prob range: [{probabilities.min():.4f}, {probabilities.max():.4f}]")
+                    
+                    # Convert probabilities back to logits, add noise, then softmax
+                    logits = torch.log(probabilities + epsilon)
+                    noise = torch.randn_like(logits) * noise_std
+                    noisy_logits = logits + noise
+                    probabilities = torch.nn.functional.softmax(noisy_logits, dim=1)
+                
+                new_entropy = torch.mean(-torch.sum(probabilities * torch.log(probabilities + epsilon), dim=1))
+                print(f"   After noise prob range: [{probabilities.min():.4f}, {probabilities.max():.4f}]")
+                print(f"   Entropy increase: {original_entropy:.4f} → {new_entropy:.4f} (+{new_entropy-original_entropy:.4f})")
+            else:
+                print(f"\n🔇 No noise applied (noise_std={noise_std})")
+            
             # Process in batches to match original behavior
             batch_size = self.dataset.cal_loader.batch_size
             num_samples = len(targets)
@@ -549,6 +598,55 @@ class BaseScorer(ABC):
             # Use cached outputs
             probabilities = self.cached_data['test_probs'].to(self.device)
             targets = self.cached_data['test_targets'].to(self.device)
+            
+            # Add realistic noise if specified (same as calibration)
+            noise_std = self.config.get('noise_std', 0.0)
+            noise_type = self.config.get('noise_type', 'logit_gaussian')
+            
+            if noise_std > 0:
+                epsilon = 1e-8  # Small value to avoid log(0)
+                original_entropy = torch.mean(-torch.sum(probabilities * torch.log(probabilities + epsilon), dim=1))
+                
+                if noise_type == 'temperature':
+                    print(f"\n🌡️ ADDING TEMPERATURE NOISE: std={noise_std} to test data")
+                    print(f"   Original prob range: [{probabilities.min():.4f}, {probabilities.max():.4f}]")
+                    
+                    # Temperature scaling with noise (more realistic)
+                    logits = torch.log(probabilities + epsilon)
+                    temp_range = self.config.get('temperature_range', [0.8, 1.2])
+                    temperature = 1.0 + (torch.rand(1).item() - 0.5) * 2 * noise_std
+                    temperature = torch.clamp(torch.tensor(temperature), temp_range[0], temp_range[1]).item()
+                    
+                    scaled_logits = logits / temperature
+                    probabilities = torch.nn.functional.softmax(scaled_logits, dim=1)
+                    
+                elif noise_type == 'quantization':
+                    print(f"\n⚙️ ADDING QUANTIZATION NOISE: std={noise_std} to test data")
+                    print(f"   Original prob range: [{probabilities.min():.4f}, {probabilities.max():.4f}]")
+                    
+                    # Simulate quantization noise (edge deployment)
+                    logits = torch.log(probabilities + epsilon)
+                    quantization_step = noise_std * 0.1  # Realistic quantization
+                    quantized_logits = torch.round(logits / quantization_step) * quantization_step
+                    quantized_logits += torch.randn_like(logits) * quantization_step * 0.1
+                    
+                    probabilities = torch.nn.functional.softmax(quantized_logits, dim=1)
+                    
+                else:  # Default: logit_gaussian
+                    print(f"\n🔊 ADDING LOGIT GAUSSIAN NOISE: std={noise_std} to test data")
+                    print(f"   Original prob range: [{probabilities.min():.4f}, {probabilities.max():.4f}]")
+                    
+                    # Convert probabilities back to logits, add noise, then softmax
+                    logits = torch.log(probabilities + epsilon)
+                    noise = torch.randn_like(logits) * noise_std
+                    noisy_logits = logits + noise
+                    probabilities = torch.nn.functional.softmax(noisy_logits, dim=1)
+                
+                new_entropy = torch.mean(-torch.sum(probabilities * torch.log(probabilities + epsilon), dim=1))
+                print(f"   After noise prob range: [{probabilities.min():.4f}, {probabilities.max():.4f}]")
+                print(f"   Entropy increase: {original_entropy:.4f} → {new_entropy:.4f} (+{new_entropy-original_entropy:.4f})")
+            else:
+                print(f"\n🔇 No noise applied to test data (noise_std={noise_std})")
             
             # Process in batches to match original behavior
             batch_size = self.dataset.test_loader.batch_size
@@ -1238,9 +1336,9 @@ class Sparsemax_Scorer(BaseScorer):
             max_score, _ = torch.max(sparsemax_probs[i], dim=0)
             max_score = max_score.item()
             
-            # For sparsemax, if true class has zero probability, it should have high score
+            # For sparsemax, handle zero probabilities with high penalty
             if true_class_score < 1e-10:  # Effectively zero
-                score = 1000.0  # Use large value instead of inf for numerical stability
+                score = 1000.0  # High penalty for zero probabilities
             else:
                 # Compute nonconformity score: max(z_max - z_y - delta, 0)
                 score = max(max_score - true_class_score - self.delta, 0)
@@ -1349,7 +1447,7 @@ class Sparsemax_Scorer(BaseScorer):
                 
                 # For sparsemax, classes with zero probability should have infinite score
                 if class_score < 1e-10:  # Effectively zero
-                    score = float('inf')
+                    score = float('inf')  # Infinite score for zero probabilities
                 else:
                     # Compute nonconformity score: max(z_max - z_class - delta, 0)
                     score = max(max_score - class_score - self.delta, 0)

@@ -77,7 +77,7 @@ scoring_function:
     params:
       negative_slope: 0.1
   final_activation:
-    name: 'Sigmoid'  # For proper 0-1 range
+    name: 'None'  # For proper 0-1 range
     params: {}
 
 # Training constraints
