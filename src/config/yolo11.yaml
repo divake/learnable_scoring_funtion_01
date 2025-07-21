@@ -5,7 +5,7 @@ inherit: base_config.yaml
 device: 1  # Use first GPU (cuda:0)
 
 # Directory paths
-data_dir: /ssd_4TB/divake/learnable_scoring_funtion_01/cache/yolo11_cache  # Directory where YOLO11 cached outputs are stored
+data_dir: /mnt/ssd1/divake/learnable_scoring_funtion_01/cache/yolo11_cache  # Directory where YOLO11 cached outputs are stored
 base_dir: .     # Base directory for relative paths
 model_dir: models/yolo11  # Directory to save trained models
 
@@ -40,7 +40,7 @@ target_coverage: 0.9
 # Cache configuration - using pre-cached data
 cache:
   enabled: true  # We're using pre-cached data
-  dir: /ssd_4TB/divake/learnable_scoring_funtion_01/cache/yolo11_cache
+  dir: /mnt/ssd1/divake/learnable_scoring_funtion_01/cache/yolo11_cache
 
 # Training configuration
 training:

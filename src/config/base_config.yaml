@@ -1,7 +1,7 @@
 # Base configuration for all experiments
 
 # Paths
-base_dir: /ssd_4TB/divake/learnable_scoring_funtion_01
+base_dir: /mnt/ssd1/divake/learnable_scoring_funtion_01
 data_dir: data
 model_dir: models
 

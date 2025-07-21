@@ -47,7 +47,7 @@ imagenet:
 
 vlm:
   num_classes: 4  # A, B, C, D options for multiple choice
-  data_dir: /ssd_4TB/divake/learnable_scoring_funtion_01/data/vlm  # Absolute path to VLM data
+  data_dir: /mnt/ssd1/divake/learnable_scoring_funtion_01/data/vlm  # Absolute path to VLM data
   default_model: cogagent-vqa-hf  # Default VLM model
   default_dataset: ai2d  # Default VLM dataset
   split_ratio: [0.7, 0.1, 0.2]  # Train/cal/test split ratio

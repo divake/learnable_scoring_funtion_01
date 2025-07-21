@@ -89,7 +89,7 @@ class Dataset(BaseDataset):
                     logging.info(f"Using absolute path: {file_path}")
                 else:
                     # Check for the known working path
-                    known_path = f"/ssd_4TB/divake/learnable_scoring_funtion_01/data/vlm/{self.model_name}/{self.dataset_name}.pkl"
+                    known_path = f"/mnt/ssd1/divake/learnable_scoring_funtion_01/data/vlm/{self.model_name}/{self.dataset_name}.pkl"
                     if os.path.exists(known_path):
                         file_path = known_path
                         logging.info(f"Using known fixed path: {file_path}")
