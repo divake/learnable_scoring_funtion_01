@@ -6,7 +6,7 @@ import os
 
 # Read the conformal_summary.json file
 print("Reading conformal_summary.json...")
-with open('/ssd_4TB/divake/learnable_scoring_funtion_01/results/conformal/summary/conformal_summary.json', 'r') as f:
+with open('/mnt/ssd1/divake/learnable_scoring_funtion_01/results/conformal/summary/conformal_summary.json', 'r') as f:
     conformal_data = json.load(f)
 
 # Initialize lists for storing data

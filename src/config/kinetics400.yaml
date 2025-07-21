@@ -8,7 +8,7 @@ multi_gpu: true  # Enable multi-GPU training with DataParallel
 dataset:
   name: kinetics400
   num_classes: 400
-  feature_dir: "/ssd_4TB/divake/vivit_kinetics400/kinetics400_features_extended"
+  feature_dir: "/mnt/ssd1/divake/vivit_kinetics400/kinetics400_features_extended"
   feature_dim: 768  # VideoMAE feature dimension
   samples_per_class: 10  # Now we have 10 samples per class
 

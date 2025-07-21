@@ -73,7 +73,7 @@ class Dataset(BaseDataset):
         super().__init__(config)
         
         # Extract YOLO11-specific configurations
-        self.yolo_dir = self.config.get('data_dir', '/ssd_4TB/divake/learnable_scoring_funtion_01/cache/yolo11_cache')
+        self.yolo_dir = self.config.get('data_dir', '/mnt/ssd1/divake/learnable_scoring_funtion_01/cache/yolo11_cache')
         self.dataset_name = self.config['dataset'].get('default_dataset', 'coco')
         
         # Get split paths from config
