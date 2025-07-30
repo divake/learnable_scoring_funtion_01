@@ -78,25 +78,19 @@ model:
   drop_rate: 0.0  # Default value
 
 # Model paths for different datasets
+# NOTE: These are fallback paths. Dataset-specific configs will override these.
 model_paths:
   cifar10: models/resnet18_cifar10_best.pth
-  cifar100: models/vit_cifar100.pth
-  imagenet: models/vit_imagenet.pth
+  # cifar100: removed - will use cifar100.yaml config
+  # imagenet: removed - will use imagenet.yaml config
   vlm: null  # No model path needed for VLM (using precomputed logits)
 
 # Model-specific configurations
+# NOTE: These are fallback configs. Dataset-specific configs will override these.
 model_configs:
   cifar10: {}
-  cifar100:
-    architecture: vit_base_patch16_224_in21k
-    img_size: 96
-    drop_path_rate: 0.1
-    drop_rate: 0.1
-  imagenet:
-    architecture: vit_base_patch16_224
-    img_size: 224
-    drop_path_rate: 0.1
-    drop_rate: 0.1
+  # cifar100: removed - will use cifar100.yaml config
+  # imagenet: removed - will use imagenet.yaml config
   vlm:
     # VLM uses a dummy model since we're working with precomputed logits
     use_dummy_model: true

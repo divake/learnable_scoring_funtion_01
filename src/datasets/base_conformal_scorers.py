@@ -281,14 +281,35 @@ class BaseScorer(ABC):
     
     def _load_cached_outputs(self):
         """Load cached model outputs if available."""
-        # Determine model type from architecture name
-        model_arch = self.config.get('model', {}).get('architecture', 'resnet18')
-        if 'vit' in model_arch.lower() or 'vision' in model_arch.lower():
-            model_type = 'VisionTransformer'
+        # Determine model type from config
+        model_config = self.config.get('model', {})
+        
+        # Check if there's an explicit 'type' field
+        if 'type' in model_config:
+            model_type_str = model_config['type'].lower()
+            if model_type_str == 'vit':
+                model_type = 'VisionTransformer'
+            elif model_type_str == 'resnet':
+                model_type = 'ResNet'
+            else:
+                raise ValueError(f"Unknown model type: {model_type_str}. Expected 'vit' or 'resnet'")
         else:
-            model_type = 'ResNet'
+            # For datasets without explicit type field, derive from architecture
+            model_arch = model_config.get('architecture')
+            if not model_arch:
+                raise ValueError("Model configuration must have either 'type' or 'architecture' field")
+            
+            if 'vit' in model_arch.lower() or 'vision' in model_arch.lower():
+                model_type = 'VisionTransformer'
+            elif 'resnet' in model_arch.lower():
+                model_type = 'ResNet'
+            else:
+                raise ValueError(f"Cannot determine model type from architecture: {model_arch}")
         
         cache_dir = Path(self.config['base_dir']) / 'cache' / self.config['dataset']['name'] / model_type
+        
+        # Log which model type is being used
+        logging.info(f"Using model type: {model_type} (cache dir: {cache_dir})")
         
         if cache_dir.exists():
             try:
@@ -1767,21 +1788,29 @@ def run_dataset(config: Dict[str, Any], dataset_name: str, scoring_name: str) ->
             
         logging.info(f"=== Starting evaluation for {dataset_desc} dataset using {scoring_name} scoring function ===")
         
-        # For ImageNet, load the dataset-specific configuration
-        if dataset_name == 'imagenet':
-            # Load ImageNet-specific configuration if exists
-            imagenet_config_path = os.path.join(config.get('base_dir', '.'), 'src', 'config', 'imagenet.yaml')
-            if os.path.exists(imagenet_config_path):
-                with open(imagenet_config_path, 'r') as f:
-                    imagenet_config = yaml.safe_load(f)
-                    # Update data_dir from imagenet.yaml
-                    if 'data_dir' in imagenet_config:
-                        dataset_config['data_dir'] = imagenet_config['data_dir']
-                        logging.info(f"Using data_dir from imagenet.yaml: {dataset_config['data_dir']}")
-                    # Update batch_size from imagenet.yaml
-                    if 'batch_size' in imagenet_config:
-                        dataset_config['batch_size'] = imagenet_config['batch_size']
-                        logging.info(f"Using batch_size from imagenet.yaml: {dataset_config['batch_size']}")
+        # Load dataset-specific configuration if exists
+        if dataset_name in ['imagenet', 'cifar100', 'cifar10']:
+            config_path = os.path.join(config.get('base_dir', '.'), 'src', 'config', f'{dataset_name}.yaml')
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    specific_config = yaml.safe_load(f)
+                    
+                    # Update data_dir if present
+                    if 'data_dir' in specific_config:
+                        dataset_config['data_dir'] = specific_config['data_dir']
+                        logging.info(f"Using data_dir from {dataset_name}.yaml: {dataset_config['data_dir']}")
+                    
+                    # Update batch_size if present
+                    if 'batch_size' in specific_config:
+                        dataset_config['batch_size'] = specific_config['batch_size']
+                        logging.info(f"Using batch_size from {dataset_name}.yaml: {dataset_config['batch_size']}")
+                    
+                    # Update model configuration if present
+                    if 'model' in specific_config:
+                        if 'model' not in dataset_config:
+                            dataset_config['model'] = {}
+                        dataset_config['model'].update(specific_config['model'])
+                        logging.info(f"Updated model config from {dataset_name}.yaml")
         
         # Initialize and run the scorer
         try:

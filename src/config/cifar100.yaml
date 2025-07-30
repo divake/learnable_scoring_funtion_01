@@ -18,11 +18,21 @@ dataset:
   std: [0.2675, 0.2565, 0.2761]
 
 model:
-  architecture: vit_base_patch16_224_in21k
-  pretrained_path: models/vit_cifar100.pth
-  img_size: 96
-  drop_path_rate: 0.1
-  drop_rate: 0.1
+  # Choose between 'resnet' or 'vit'
+  type: resnet  # Options: 'resnet' or 'vit'
+  
+  # ResNet configuration (used when type: resnet)
+  resnet:
+    architecture: resnet18  # timm will load the CIFAR-100 specific version
+    pretrained_path: models/resnet18_cifar100_hf.pth
+    
+  # ViT configuration (used when type: vit)
+  vit:
+    architecture: vit_base_patch16_224_in21k
+    pretrained_path: models/vit_cifar100.pth
+    img_size: 96
+    drop_path_rate: 0.1
+    drop_rate: 0.1
 
 # Paths
 plot_dir: plots/cifar100
