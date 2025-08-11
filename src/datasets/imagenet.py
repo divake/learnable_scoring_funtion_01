@@ -2,13 +2,22 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset, Dataset as TorchDataset
-import timm
 import numpy as np
 import os
 import logging
 from PIL import Image
 from typing import List, Tuple
 import random
+import sys
+
+# Temporarily disable wandb to avoid import issues
+os.environ['WANDB_DISABLED'] = 'true'
+sys.modules['wandb'] = None
+
+try:
+    import timm
+except ImportError:
+    timm = None
 
 from .base import BaseDataset
 
@@ -206,6 +215,9 @@ class Dataset(BaseDataset):
         Returns:
             torch.nn.Module: Pretrained ViT model
         """
+        if timm is None:
+            raise ImportError("timm library is required for ImageNet models but has import issues. Please fix wandb installation or use a different dataset.")
+        
         model = timm.create_model(
             self.config['model']['architecture'],
             pretrained=False,

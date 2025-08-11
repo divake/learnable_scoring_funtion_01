@@ -1,0 +1,190 @@
+# HAM10000 configuration
+inherit: base_config.yaml
+
+# Device and general settings
+device: 0
+seed: 42
+num_epochs: 20
+batch_size: 32
+target_coverage: 0.9
+
+# Paths
+plot_dir: plots/ham10000
+log_dir: logs/ham10000
+
+# Cache configuration
+cache:
+  enabled: true
+  dir: cache/ham10000
+
+# Dataset configuration
+dataset:
+  name: ham10000
+  data_dir: data/ham10000
+  num_classes: 7
+  class_names: ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
+  # Using pre-defined splits from data/ham10000/splits/:
+  # - train.csv: 7,010 samples for training
+  # - validation.csv: 2,004 samples for calibration
+  # - test.csv: 1,001 samples for testing
+  batch_size: 32
+  num_workers: 4
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+# Model configuration
+model:
+  type: vit
+  name: google/vit-base-patch16-224
+  pretrained: true
+  num_classes: 7
+  hidden_size: 768
+  dropout: 0.1
+  vit:
+    img_size: 224
+    patch_size: 16
+    num_heads: 12
+    num_layers: 12
+
+# Training configuration  
+training:
+  learning_rate: 1e-4
+  weight_decay: 0.01
+  max_epochs: 20
+  warmup_epochs: 2
+  patience: 5
+  min_delta: 0.001
+  gradient_clip: 1.0
+  mixed_precision: true
+  
+  grad_clip:
+    enabled: true
+    max_norm: 0.5
+  
+  loss_weights:
+    coverage: 4.0  # lambda1 - for coverage control
+    size: 1.5      # lambda2 - for set size control
+    margin: 0.2    # margin loss weight
+  
+  loss:
+    type: combined
+    mse_weight: 1.0
+    mse_weight_schedule:
+      type: cosine_annealing
+      min_weight: 0.1
+      max_weight: 1.0
+      period: 10
+    raps_weight: 0.5
+    raps_regularization: true
+    kreg: 0.1
+    lamda: 0.01
+    tau: 0.1
+    
+  optimizer:
+    lr: 0.0001
+    weight_decay: 0.01
+  
+  scheduler:
+    name: 'CosineAnnealingWarmRestarts'
+    params:
+      T_0: 5
+      T_mult: 1
+      eta_min: 0.00001
+
+# Scoring function configuration
+scoring_function:
+  hidden_dims: [128, 64]
+  dropout: 0.2
+  l2_lambda: 0.005
+  activation:
+    name: 'LeakyReLU'
+    params:
+      negative_slope: 0.1
+  final_activation:
+    name: 'Sigmoid'
+
+# Optimizer configuration
+optimizer:
+  name: 'AdamW'
+  params:
+    lr: 0.0001
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+    eps: 0.00000001
+
+# Scheduler configuration (nested under optimizer)
+  scheduler:
+    name: 'CosineAnnealingWarmRestarts'
+    params:
+      T_0: 5
+      T_mult: 1
+      eta_min: 0.00001
+
+# Tau configuration
+tau:
+  min: 0.01
+  max: 10.0
+  window_size: 5
+  smoothing_weights:
+    start: 1.5
+    end: 1.0
+
+# Set size configuration
+set_size:
+  target: 1
+  max: 3
+  margin: 1.5
+  percentiles:
+    low: 25
+    high: 75
+
+# Training dynamics (overrides from base_config if needed)
+training_dynamics:
+  stability_factor: 0.05
+  separation_factor: 0.5
+  perturbation_noise: 0.01
+  permutation_augmentation_prob: 0.5
+  coverage_tolerance: 0.02
+  coverage_closeness_threshold: 0.01
+  coverage_deficit_threshold: 0.02
+  size_penalty_boost: 1.5
+  coverage_boost: 2.0
+  xavier_init_gain: 0.5
+  num_workers: 2
+  ece_test_points: 10
+
+# Conformal prediction configuration
+conformal:
+  alpha: 0.1
+  method: raps
+  kreg: 5
+  lamda: 0.01
+  k_reg: 5
+  disallow_zero_sets: true
+  rand: true
+
+# Data augmentation
+augmentation:
+  train:
+    random_horizontal_flip: 0.5
+    random_vertical_flip: 0.5
+    random_rotation: 30
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+    random_resized_crop:
+      size: 224
+      scale: [0.8, 1.0]
+  val:
+    resize: 256
+    center_crop: 224
+
+# Logging configuration
+logging:
+  save_dir: outputs/ham10000
+  tensorboard: true
+  log_interval: 10
+  save_best_only: true
+  save_last: true
