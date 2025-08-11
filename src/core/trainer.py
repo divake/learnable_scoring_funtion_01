@@ -100,6 +100,11 @@ class ScoringFunctionTrainer:
                 optimizer,
                 **scheduler_params
             )
+        elif scheduler_config['name'] == 'CosineAnnealingWarmRestarts':
+            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                **scheduler_config['params']
+            )
         else:
             raise ValueError(f"Unsupported scheduler: {scheduler_config['name']}")
             
@@ -689,6 +694,10 @@ class ScoringFunctionTrainer:
         history = self._init_history()
         best_set_size = float('inf')  # Initialize best set size to infinity
         
+        # Track best performance for stability
+        best_coverage_close = float('inf')  # Best set size when coverage is close to target
+        best_model_state = None
+        
         for epoch in range(num_epochs):
             # Store current epoch for adaptive regularization
             self.current_epoch = epoch + 1
@@ -1030,7 +1039,8 @@ class ScoringFunctionTrainer:
                 true_positions[i] = (sorted_indices[i] == targets[i]).nonzero(as_tuple=True)[0]
             
             # Regularization term: penalize if true class is not among top-k
-            kreg = 0.2 if self.current_epoch <= 5 else 0.1  # Adaptive regularization
+            # Smooth transition of kreg to avoid sudden changes
+            kreg = 0.2 - 0.02 * min(self.current_epoch - 1, 5)  # 0.2 → 0.1 over 5 epochs
             reg_term = torch.relu(true_positions.float() - kreg * self.scoring_fn.num_classes).mean()
             
             # Coverage loss
@@ -1044,10 +1054,15 @@ class ScoringFunctionTrainer:
             avg_size = set_sizes.mean()
             
             # Quadratic penalty for sets > 2
-            lamda = 0.01 if self.current_epoch <= 5 else 0.02  # Increase penalty after warmup
+            # Smooth transition of lambda
+            lamda = 0.01 + 0.002 * min(self.current_epoch - 1, 5)  # 0.01 → 0.02 over 5 epochs
+            
+            # Adaptive target based on current performance
+            # Start with larger tolerance and gradually tighten
+            size_target = 2.0 - 0.1 * min(self.current_epoch - 1, 5)  # 2.0 → 1.5 over 5 epochs
             size_penalty = torch.where(
-                set_sizes > 2,
-                (set_sizes - 2).pow(2),
+                set_sizes > size_target,
+                (set_sizes - size_target).pow(2),
                 torch.zeros_like(set_sizes)
             ).mean()
             size_loss = avg_size + lamda * size_penalty
@@ -1057,23 +1072,38 @@ class ScoringFunctionTrainer:
             ranking_loss = torch.relu(target_scores.unsqueeze(1) - false_scores + margin).mean()
             
             
-            # Adaptive loss weighting based on epoch
-            if self.current_epoch <= 3:
-                # Warmup: focus on coverage
-                loss = (
-                    15.0 * coverage_loss +
-                    3.0 * size_loss +
-                    0.5 * ranking_loss +
-                    1.0 * reg_term
-                )
-            else:
-                # Main training: balanced weights
-                loss = (
-                    10.0 * coverage_loss +
-                    5.0 * size_loss +
-                    1.0 * ranking_loss +
-                    2.0 * reg_term
-                )
+            # Smooth adaptive loss weighting based on epoch
+            # Gradually transition weights to avoid sudden jumps
+            epoch_factor = min(1.0, (self.current_epoch - 1) / 5.0)  # 0 to 1 over first 5 epochs
+            
+            # Coverage weight: start high (20) and gradually reduce to 10
+            coverage_weight = 20.0 - 10.0 * epoch_factor
+            
+            # Size weight: start low (1) and gradually increase to 5
+            size_weight = 1.0 + 4.0 * epoch_factor
+            
+            # Ranking weight: start low (0.2) and gradually increase to 1
+            ranking_weight = 0.2 + 0.8 * epoch_factor
+            
+            # Reg term weight: constant at 1.5
+            reg_weight = 1.5
+            
+            # Coverage-aware dynamic adjustment
+            # If coverage is good, focus more on size reduction
+            if abs(coverage.item() - target_coverage) < 0.01:  # Within 1% of target
+                size_weight *= 1.5
+                coverage_weight *= 0.8
+            elif coverage.item() < target_coverage - 0.02:  # More than 2% below target
+                coverage_weight *= 1.5
+                size_weight *= 0.5
+            
+            # Combined loss with smooth weights
+            loss = (
+                coverage_weight * coverage_loss +
+                size_weight * size_loss +
+                ranking_weight * ranking_loss +
+                reg_weight * reg_term
+            )
             
             # Add stability loss if available
             if hasattr(self.scoring_fn, 'stability_loss'):

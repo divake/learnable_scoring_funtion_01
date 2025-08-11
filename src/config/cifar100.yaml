@@ -19,7 +19,7 @@ dataset:
 
 model:
   # Choose between 'resnet' or 'vit'
-  type: resnet  # Options: 'resnet' or 'vit'
+  type: vit  # Options: 'resnet' or 'vit'
   
   # ResNet configuration (used when type: resnet)
   resnet:
@@ -57,16 +57,14 @@ training:
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.0002  # Reduced from 0.001 for better stability
+    lr: 0.0001  # Further reduced for stability
     weight_decay: 0.01
   scheduler:
-    name: 'OneCycleLR'
+    name: 'CosineAnnealingWarmRestarts'  # Better for stable training
     params:
-      max_lr: 0.0002  # Reduced from 0.001 to match base lr
-      pct_start: 0.2
-      div_factor: 20
-      final_div_factor: 100
-      anneal_strategy: 'cos'
+      T_0: 5  # Restart every 5 epochs
+      T_mult: 1  # Keep constant restart period
+      eta_min: 0.00001  # Minimum learning rate
 
 # Model architecture
 scoring_function:
@@ -83,8 +81,8 @@ scoring_function:
 
 # Training constraints
 tau:
-  min: 0.1
-  max: 0.9
+  min: 0.01
+  max: 10.0  # Increased to allow higher thresholds when needed
   window_size: 5
 
 # Set size constraints
