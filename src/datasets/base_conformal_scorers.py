@@ -252,6 +252,8 @@ class BaseScorer(ABC):
                 from src.datasets.imagenet import Dataset
             elif dataset_name == 'vlm':
                 from src.datasets.vlm import Dataset
+            elif dataset_name == 'ham10000':
+                from src.datasets.ham10000 import Dataset
             else:
                 raise ValueError(f"Dataset {dataset_name} not supported")
             
@@ -1895,7 +1897,7 @@ def main():
     set_seed(seed)
     
     # Determine which datasets to run
-    available_datasets = ['cifar10', 'cifar100', 'imagenet', 'vlm']  # Updated supported datasets
+    available_datasets = ['cifar10', 'cifar100', 'imagenet', 'vlm', 'ham10000']  # Updated supported datasets
     if args.dataset == 'all':
         datasets = available_datasets
         logging.info(f"Running evaluation for all datasets: {', '.join(datasets)}")

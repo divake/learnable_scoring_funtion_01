@@ -48,6 +48,15 @@ vlm:
   # VLM-specific adjustments for conformal prediction
   apply_softmax: true  # Apply softmax to convert raw logits to probabilities
   use_first_n_logits: 4  # Use only the first 4 logits (for A, B, C, D)
+
+ham10000:
+  num_classes: 7
+  input_size: [224, 224]
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  data_dir: data/ham10000
+  batch_size: 32
+  num_workers: 4
   batch_size: 128  # Batch size for dataloaders
   num_workers: 4  # Number of workers for dataloaders
   # Run all models flag
