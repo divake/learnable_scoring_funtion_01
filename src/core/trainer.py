@@ -690,6 +690,8 @@ class ScoringFunctionTrainer:
         best_set_size = float('inf')  # Initialize best set size to infinity
         
         for epoch in range(num_epochs):
+            # Store current epoch for adaptive regularization
+            self.current_epoch = epoch + 1
             current_lr = optimizer.param_groups[0]['lr']
             
             # Compute tau on calibration set
@@ -1019,64 +1021,59 @@ class ScoringFunctionTrainer:
             mask[torch.arange(batch_size), targets] = False
             false_scores = scores[mask].view(batch_size, -1)
             
-            # Margin loss
-            margin_loss = torch.relu(
-                target_scores - false_scores.min(dim=1)[0] + set_size_config['margin']
-            ).mean()
+            # Sort scores for regularization
+            sorted_scores, sorted_indices = torch.sort(scores, dim=1)
+            
+            # Find position of true class in sorted scores
+            true_positions = torch.zeros(batch_size, dtype=torch.long, device=scores.device)
+            for i in range(batch_size):
+                true_positions[i] = (sorted_indices[i] == targets[i]).nonzero(as_tuple=True)[0]
+            
+            # Regularization term: penalize if true class is not among top-k
+            kreg = 0.2 if self.current_epoch <= 5 else 0.1  # Adaptive regularization
+            reg_term = torch.relu(true_positions.float() - kreg * self.scoring_fn.num_classes).mean()
             
             # Coverage loss
             coverage_indicators = (target_scores <= tau).float()
             coverage = coverage_indicators.mean()
-            coverage_loss = (1 - coverage)
+            coverage_loss = (coverage - target_coverage).pow(2)
             
-            # Size penalty
+            # Size loss with penalty for large sets
             pred_sets = scores <= tau
             set_sizes = pred_sets.float().sum(dim=1)
             avg_size = set_sizes.mean()
             
-            size_deviation = torch.abs(avg_size - set_size_config['target'])
-            size_penalty = size_deviation ** 2
+            # Quadratic penalty for sets > 2
+            lamda = 0.01 if self.current_epoch <= 5 else 0.02  # Increase penalty after warmup
+            size_penalty = torch.where(
+                set_sizes > 2,
+                (set_sizes - 2).pow(2),
+                torch.zeros_like(set_sizes)
+            ).mean()
+            size_loss = avg_size + lamda * size_penalty
             
-            # Add separation loss to encourage true scores near 0 and false scores near 1
-            # This helps create the desired separation in the score distributions
-            if hasattr(self.scoring_fn, 'separation_factor'):
-                # Push true scores toward 0 with moderate penalty
-                # Using power of 2 instead of 4 for gentler push
-                true_score_loss = torch.mean(target_scores ** 2)
-                
-                # Push false scores toward 1 with moderate penalty
-                # Using power of 2 instead of 4 for gentler push
-                false_score_loss = torch.mean((1.0 - false_scores) ** 2)
-                
-                # Simplified separation loss without aggressive entropy/binary penalties
-                separation_loss = true_score_loss + false_score_loss
-                self.scoring_fn.separation_loss = self.scoring_fn.separation_factor * separation_loss
+            # Soft margin ranking loss (reduced weight)
+            margin = 0.5
+            ranking_loss = torch.relu(target_scores.unsqueeze(1) - false_scores + margin).mean()
+            
+            
+            # Adaptive loss weighting based on epoch
+            if self.current_epoch <= 3:
+                # Warmup: focus on coverage
+                loss = (
+                    15.0 * coverage_loss +
+                    3.0 * size_loss +
+                    0.5 * ranking_loss +
+                    1.0 * reg_term
+                )
             else:
-                separation_loss = 0.0
-            
-            # Get dynamic training parameters
-            dynamics = self.config.get('training_dynamics', {})
-            
-            # Dynamically adjust coverage weight if below target
-            coverage_boost = 1.0
-            size_boost = 1.0
-            
-            closeness_threshold = dynamics.get('coverage_closeness_threshold', 0.01)
-            deficit_threshold = dynamics.get('coverage_deficit_threshold', 0.02)
-            
-            # If coverage is good (close to target), boost size weight
-            if abs(coverage.item() - target_coverage) < closeness_threshold:
-                size_boost = dynamics.get('size_penalty_boost', 1.5)  # Configurable boost
-            # If coverage is too low, prioritize coverage
-            elif coverage.item() < target_coverage - deficit_threshold:
-                coverage_boost = dynamics.get('coverage_boost', 2.0)  # Configurable boost
-            
-            # Combined loss with dynamic weights
-            loss = (
-                self.lambda1 * coverage_boost * coverage_loss +
-                self.lambda2 * size_boost * size_penalty +
-                self.margin_weight * margin_loss
-            )
+                # Main training: balanced weights
+                loss = (
+                    10.0 * coverage_loss +
+                    5.0 * size_loss +
+                    1.0 * ranking_loss +
+                    2.0 * reg_term
+                )
             
             # Add stability loss if available
             if hasattr(self.scoring_fn, 'stability_loss'):

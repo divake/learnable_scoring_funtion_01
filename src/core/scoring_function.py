@@ -2,15 +2,18 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from typing import Optional, Tuple, Dict
 
 
 class ScoringFunction(nn.Module):
-    def __init__(self, input_dim=None, hidden_dims=[64, 32], output_dim=None, config=None):
+    def __init__(self, input_dim=None, hidden_dims=[512, 256], output_dim=None, config=None):
         """
-        Initialize enhanced scoring function with distribution features and threshold prediction
+        Initialize distribution-aware learnable scoring function.
         
-        This function processes probability distributions along with extracted features
-        to learn optimal scores and threshold for each distribution.
+        This function learns to score classes based on their relative relationships 
+        within the distribution, using rank-based features and context-aware adjustments.
         
         Args:
             input_dim: Number of classes (dimension of probability vector)
@@ -41,49 +44,37 @@ class ScoringFunction(nn.Module):
             
         self.input_dim = input_dim
         self.output_dim = output_dim
+        self.hidden_dim = hidden_dims[0] if hidden_dims else 512
         
-        # Build the main network for scoring
-        layers = []
-        prev_dim = input_dim
+        # Feature dimensions for distribution-aware scoring
+        # Per-class: 12 features, Full context: 6 * num_classes
+        feature_dim = 12 + 6 * self.num_classes
         
-        # Get activation configuration
-        activation_config = config['scoring_function']['activation']
-        if activation_config['name'] == 'LeakyReLU':
-            activation = nn.LeakyReLU(**activation_config['params'])
-        else:
-            raise ValueError(f"Unsupported activation: {activation_config['name']}")
+        # Main scoring network
+        self.scoring_network = nn.Sequential(
+            nn.Linear(feature_dim, self.hidden_dim),
+            nn.LayerNorm(self.hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.LayerNorm(self.hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.hidden_dim, self.hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim // 2, 1)  # Output: single score per class
+        )
         
-        # Build hidden layers
-        dropout_rate = config['scoring_function']['dropout']
-        for hidden_dim in hidden_dims:
-            layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                nn.BatchNorm1d(hidden_dim),
-                activation,
-                nn.Dropout(dropout_rate)
-            ])
-            prev_dim = hidden_dim
+        # Context-aware adjustment network
+        self.context_network = nn.Sequential(
+            nn.Linear(6, 64),  # 6 distribution features
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 3)  # Output: [scale, shift, temperature]
+        )
         
-        # Final layer - outputs scores for each class
-        final_layer = nn.Linear(prev_dim, output_dim)
-        layers.append(final_layer)
-        
-        # Get final activation configuration
-        final_activation_config = config['scoring_function']['final_activation']
-        if final_activation_config['name'] == 'Softplus':
-            final_activation = nn.Softplus(**final_activation_config['params'])
-        elif final_activation_config['name'] == 'Sigmoid':
-            # Sigmoid ensures output is in [0, 1] range
-            final_activation = nn.Sigmoid()
-        else:
-            raise ValueError(f"Unsupported final activation: {final_activation_config['name']}")
-        layers.append(final_activation)
-        
-        self.network = nn.Sequential(*layers)
-        
-        # Remove threshold prediction network - we'll use calibration set for tau
-        
-        self.l2_lambda = config['scoring_function']['l2_lambda']
+        self.l2_lambda = config['scoring_function'].get('l2_lambda', 0.005)
         
         # Get training dynamics from config
         dynamics = config.get('training_dynamics', {})
@@ -92,150 +83,170 @@ class ScoringFunction(nn.Module):
         self.perturbation_noise = dynamics.get('perturbation_noise', 0.01)
         self.xavier_init_gain = dynamics.get('xavier_init_gain', 0.5)
         
-        # Initialize weights to encourage symmetric behavior (after setting xavier_init_gain)
+        # Initialize weights for better learning
         self._init_weights()
         
     def _init_weights(self):
-        """Initialize weights to encourage learning from 1-p baseline"""
-        modules_list = list(self.modules())
-        for i, module in enumerate(modules_list):
+        """Initialize weights to encourage diverse scores"""
+        for module in self.modules():
             if isinstance(module, nn.Linear):
-                # Initialize with very small weights to start near identity-like function
-                nn.init.xavier_uniform_(module.weight, gain=0.01)
+                # Use smaller initialization for output layers
+                if module.out_features == 1 or module.out_features == 3:
+                    nn.init.normal_(module.weight, mean=0, std=0.01)
+                else:
+                    nn.init.xavier_uniform_(module.weight, gain=0.5)
                 if module.bias is not None:
-                    # Initialize bias to small negative values to start with lower scores
-                    nn.init.constant_(module.bias, -0.1)
+                    nn.init.zeros_(module.bias)
     
-    def _extract_distribution_features(self, probs):
+    def compute_features(self, probs: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Extract informative features from probability distribution
+        Compute all relative and distributional features
         
         Args:
-            probs: Probability vectors of shape (batch_size, num_classes)
+            probs: [B, C] probability distributions
             
         Returns:
-            features: Tensor of shape (batch_size, num_dist_features)
+            Dictionary of features
         """
-        batch_size = probs.shape[0]
-        features = []
+        batch_size, num_classes = probs.shape
+        device = probs.device
         
-        # 1. Entropy - measures uncertainty
-        # Clamp probabilities to avoid log(0)
-        probs_clamped = torch.clamp(probs, min=1e-8, max=1-1e-8)
-        entropy = -torch.sum(probs_clamped * torch.log(probs_clamped), dim=1)
-        features.append(entropy)
+        # 1. Rank-based features (1 is highest prob, num_classes is lowest)
+        sorted_indices = torch.argsort(probs, dim=1, descending=True)
+        ranks = torch.zeros_like(probs)
+        for b in range(batch_size):
+            ranks[b, sorted_indices[b]] = torch.arange(num_classes, device=device).float() + 1
+        ranks = ranks / num_classes  # Normalize to [0, 1]
         
-        # 2. Max probability - confidence level
-        max_prob, _ = torch.max(probs, dim=1)
-        features.append(max_prob)
+        # 2. Relative probability features
+        p_max = probs.max(dim=1, keepdim=True)[0]
+        p_mean = probs.mean(dim=1, keepdim=True)
+        p_std = probs.std(dim=1, keepdim=True)
         
-        # 3. Top-5 probability sum - concentration in top classes
-        top5_probs, _ = torch.topk(probs, k=min(5, probs.shape[1]), dim=1)
-        top5_sum = torch.sum(top5_probs, dim=1)
-        features.append(top5_sum)
+        relative_probs = probs / (p_max + 1e-8)  # Relative to max
+        deviations = (probs - p_mean) / (p_std + 1e-8)  # Standardized
         
-        # 4. Gini coefficient - inequality measure
-        sorted_probs, _ = torch.sort(probs, dim=1)
-        n = probs.shape[1]
-        index = torch.arange(1, n + 1, dtype=probs.dtype, device=probs.device).unsqueeze(0)
-        sum_probs = torch.sum(sorted_probs, dim=1, keepdim=True)
-        # Avoid division by zero
-        sum_probs = torch.clamp(sum_probs, min=1e-8)
-        gini = (2 * torch.sum(index * sorted_probs, dim=1)) / (n * sum_probs.squeeze()) - (n + 1) / n
-        features.append(gini)
+        # 3. Log probabilities (for better gradient flow with small probs)
+        log_probs = torch.log(probs + 1e-8)
         
-        # 5. Variance - spread of probabilities
-        mean_prob = torch.mean(probs, dim=1, keepdim=True)
-        variance = torch.mean((probs - mean_prob) ** 2, dim=1)
-        features.append(variance)
+        # 4. Top-k indicators (is this class in top-k?)
+        top_k = 5
+        _, top_indices = torch.topk(probs, min(top_k, num_classes), dim=1)
+        is_top_k = torch.zeros_like(probs)
+        is_top_k.scatter_(1, top_indices, 1)
         
-        # 6. Distance from uniform distribution
-        uniform_prob = 1.0 / probs.shape[1]
-        dist_from_uniform = torch.mean(torch.abs(probs - uniform_prob), dim=1)
-        features.append(dist_from_uniform)
+        # 5. Distribution-level features (same for all classes in a sample)
+        entropy = -(probs * log_probs).sum(dim=1)  # Shannon entropy
+        max_prob = p_max.squeeze(1)
+        top5_mass = probs.topk(min(5, num_classes), dim=1)[0].sum(dim=1)
+        top10_mass = probs.topk(min(10, num_classes), dim=1)[0].sum(dim=1)
+        effective_classes = 1.0 / (probs ** 2).sum(dim=1)  # Inverse Simpson index
+        prob_range = probs.max(dim=1)[0] - probs.min(dim=1)[0]
         
-        # 7. Number of classes above threshold (0.01) - sparsity
-        num_above_threshold = torch.sum(probs > 0.01, dim=1).float()
-        features.append(num_above_threshold)
+        distribution_features = torch.stack([
+            entropy,
+            max_prob,
+            top5_mass,
+            top10_mass,
+            effective_classes / num_classes,  # Normalize
+            prob_range
+        ], dim=1)  # [B, 6]
         
-        # 8. Ratio of max to second max - margin
-        top2_probs, _ = torch.topk(probs, k=min(2, probs.shape[1]), dim=1)
-        if probs.shape[1] > 1:
-            # Clamp ratio to prevent extreme values
-            ratio = torch.clamp(top2_probs[:, 0] / (top2_probs[:, 1] + 1e-8), max=1000.0)
-        else:
-            ratio = torch.ones(batch_size, device=probs.device)
-        features.append(ratio)
-        
-        # 9. Effective number of classes (perplexity)
-        # Clamp entropy to prevent overflow in exp
-        perplexity = torch.exp(torch.clamp(entropy, max=10.0))
-        features.append(perplexity)
-        
-        # Stack all features
-        features = torch.stack(features, dim=1)
-        
-        # Check for NaN/inf and replace with zeros
-        features = torch.nan_to_num(features, nan=0.0, posinf=1000.0, neginf=-1000.0)
-        
-        return features
+        return {
+            'probs': probs,
+            'ranks': ranks,
+            'relative_probs': relative_probs,
+            'deviations': deviations,
+            'log_probs': log_probs,
+            'is_top_k': is_top_k,
+            'distribution_features': distribution_features
+        }
     
-    def forward(self, x):
+    def forward(self, probs):
         """
-        Forward pass through the enhanced scoring function.
-        
-        This processes probability vectors along with extracted distribution features
-        to produce scores for each class.
+        Compute relative scores for given probability distributions
         
         Args:
-            x: Input tensor of shape (batch_size, num_classes) containing probability vectors
+            probs: Input tensor of shape (batch_size, num_classes) containing probability vectors
             
         Returns:
             scores: Tensor of shape (batch_size, num_classes) with scores for each class
         """
         # Ensure input has correct shape
-        if x.dim() == 1:
-            x = x.unsqueeze(0)
+        if probs.dim() == 1:
+            probs = probs.unsqueeze(0)
         
-        batch_size, num_classes = x.shape
+        batch_size, num_classes = probs.shape
         
         if num_classes != self.num_classes:
             raise ValueError(f"Expected {self.num_classes} classes, got {num_classes}")
         
-        # Pass probabilities directly through the network
-        # No feature extraction - keep it simple
-        scores = self.network(x)
+        # Extract all features
+        features = self.compute_features(probs)
+        
+        # Expand distribution features to match per-class shape
+        dist_features_expanded = features['distribution_features'].unsqueeze(1).expand(
+            batch_size, num_classes, -1
+        )  # [B, C, 6]
+        
+        # Concatenate all features for each class
+        per_class_features = torch.cat([
+            features['probs'].unsqueeze(-1),
+            features['ranks'].unsqueeze(-1),
+            features['relative_probs'].unsqueeze(-1),
+            features['deviations'].unsqueeze(-1),
+            features['log_probs'].unsqueeze(-1),
+            features['is_top_k'].unsqueeze(-1),
+            dist_features_expanded
+        ], dim=-1)  # [B, C, 12]
+        
+        # Flatten batch of features
+        per_class_features = per_class_features.view(batch_size * num_classes, -1)
+        
+        # Replicate each class's features with full distribution context
+        probs_repeated = probs.unsqueeze(1).expand(-1, num_classes, -1)  # [B, C, C]
+        probs_context = probs_repeated.reshape(batch_size * num_classes, num_classes)
+        
+        # Combine per-class features with full context
+        full_features = torch.cat([
+            per_class_features,
+            probs_context,
+            features['ranks'].unsqueeze(1).expand(-1, num_classes, -1).reshape(batch_size * num_classes, num_classes),
+            features['relative_probs'].unsqueeze(1).expand(-1, num_classes, -1).reshape(batch_size * num_classes, num_classes),
+            features['deviations'].unsqueeze(1).expand(-1, num_classes, -1).reshape(batch_size * num_classes, num_classes),
+            features['log_probs'].unsqueeze(1).expand(-1, num_classes, -1).reshape(batch_size * num_classes, num_classes),
+            features['is_top_k'].unsqueeze(1).expand(-1, num_classes, -1).reshape(batch_size * num_classes, num_classes)
+        ], dim=-1)
+        
+        # Score each class with full context
+        scores = self.scoring_network(full_features)  # [B*C, 1]
+        scores = scores.view(batch_size, num_classes)  # [B, C]
+        
+        # Apply context-aware adjustments
+        context_params = self.context_network(features['distribution_features'])
+        scale, shift, temperature = context_params[:, 0:1], context_params[:, 1:2], context_params[:, 2:3]
+        
+        # Apply adjustments
+        scale = torch.sigmoid(scale) * 2  # Scale between 0 and 2
+        temperature = torch.sigmoid(temperature) * 2 + 0.1  # Temperature between 0.1 and 2.1
+        
+        scores = (scores * scale + shift) / temperature
+        
+        # Ensure scores are positive and well-behaved
+        scores = F.softplus(scores) + 0.001
+        
+        # Add strong bias based on rank to ensure discrimination
+        rank_penalty = features['ranks'] * 5.0  # Strong penalty for low-probability classes
+        scores = scores + rank_penalty
         
         # Add L2 regularization
-        l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
-        self.l2_reg = self.l2_lambda * l2_reg
-        
-        # No need to clamp if using sigmoid activation
-        # For other activations, ensure scores are non-negative
-        if not isinstance(self.network[-1], nn.Sigmoid):
-            scores = torch.clamp(scores, min=0.0)
-        
-        # Add stability term during training
         if self.training:
-            # Small perturbation to test robustness
-            perturbed_x = x + torch.randn_like(x) * self.perturbation_noise
-            perturbed_x = perturbed_x / perturbed_x.sum(dim=-1, keepdim=True)
-            
-            perturbed_scores = self.network(perturbed_x)
-            
-            if not isinstance(self.network[-1], nn.Sigmoid):
-                perturbed_scores = torch.clamp(perturbed_scores, min=0.0)
-            
-            # Stability loss encourages consistent outputs
-            self.stability_loss = self.stability_factor * torch.mean((scores - perturbed_scores)**2)
-            
-            # Add class-agnostic regularization
-            # Encourage the model to produce similar score distributions for similar probability patterns
-            # This is achieved through permutation augmentation in the trainer
-            # The separation loss will be computed in the trainer using self.separation_factor
-        else:
+            l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
+            self.l2_reg = self.l2_lambda * l2_reg
             self.stability_loss = 0.0
-            self.separation_loss = 0.0
+        else:
+            self.l2_reg = 0.0
+            self.stability_loss = 0.0
         
         return scores
     

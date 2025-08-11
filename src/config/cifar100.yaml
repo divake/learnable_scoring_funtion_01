@@ -39,7 +39,7 @@ plot_dir: plots/cifar100
 log_dir: logs/cifar100
 
 # Training parameters
-num_epochs: 50
+num_epochs: 15
 batch_size: 128
 target_coverage: 0.9
 

@@ -2,10 +2,19 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset
-import timm
 import numpy as np
 import os
 import logging
+import sys
+
+# Temporarily disable wandb to avoid import issues
+os.environ['WANDB_DISABLED'] = 'true'
+sys.modules['wandb'] = None
+
+try:
+    import timm
+except ImportError:
+    timm = None
 
 from .base import BaseDataset
 
@@ -164,9 +173,14 @@ class Dataset(BaseDataset):
             
             # Load pretrained weights
             pretrained_path = resnet_config['pretrained_path']
+            # config['device'] is already a torch.device or string like 'cuda:1'
+            if isinstance(self.config['device'], str):
+                device = torch.device(self.config['device'])
+            else:
+                device = self.config['device']
             state_dict = torch.load(
                 os.path.join(self.config['base_dir'], pretrained_path),
-                map_location=self.config['device'],
+                map_location=device,
                 weights_only=False
             )
             model.load_state_dict(state_dict)
@@ -174,6 +188,9 @@ class Dataset(BaseDataset):
                 
         elif self.model_type == 'vit':
             # Load ViT model
+            if timm is None:
+                raise ImportError("timm library is required for ViT models but has import issues. Please use ResNet model type instead.")
+            
             if 'vit' not in self.config['model']:
                 raise ValueError("ViT model configuration missing 'vit' section")
                 
@@ -199,9 +216,14 @@ class Dataset(BaseDataset):
             
             # Load pretrained weights
             pretrained_path = vit_config['pretrained_path']
+            # config['device'] is already a torch.device or string like 'cuda:1'
+            if isinstance(self.config['device'], str):
+                device = torch.device(self.config['device'])
+            else:
+                device = self.config['device']
             state_dict = torch.load(
                 os.path.join(self.config['base_dir'], pretrained_path),
-                map_location=self.config['device']
+                map_location=device
             )
             model.load_state_dict(state_dict)
             logging.info(f"Loaded pretrained ViT weights from {pretrained_path}")
