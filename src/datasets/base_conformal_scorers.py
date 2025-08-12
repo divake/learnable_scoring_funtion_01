@@ -151,7 +151,13 @@ def get_dataset_config(config: Dict[str, Any], dataset_name: str) -> Dict[str, A
         if not isinstance(dataset_config['dataset'], dict):
             dataset_config['dataset'] = {}
         for key, value in dataset_overrides.items():
-            dataset_config['dataset'][key] = value
+            # Special handling for model configuration
+            if key == 'model':
+                if 'model' not in dataset_config:
+                    dataset_config['model'] = {}
+                dataset_config['model'].update(value)
+            else:
+                dataset_config['dataset'][key] = value
     
     # Apply model path if available
     if 'model_paths' in config and dataset_name in config['model_paths']:
@@ -254,6 +260,8 @@ class BaseScorer(ABC):
                 from src.datasets.vlm import Dataset
             elif dataset_name == 'ham10000':
                 from src.datasets.ham10000 import Dataset
+            elif dataset_name == 'plantnet':
+                from src.datasets.plantnet import Dataset
             else:
                 raise ValueError(f"Dataset {dataset_name} not supported")
             
@@ -1897,7 +1905,7 @@ def main():
     set_seed(seed)
     
     # Determine which datasets to run
-    available_datasets = ['cifar10', 'cifar100', 'imagenet', 'vlm', 'ham10000']  # Updated supported datasets
+    available_datasets = ['cifar10', 'cifar100', 'imagenet', 'vlm', 'ham10000', 'plantnet']  # Updated supported datasets
     if args.dataset == 'all':
         datasets = available_datasets
         logging.info(f"Running evaluation for all datasets: {', '.join(datasets)}")
