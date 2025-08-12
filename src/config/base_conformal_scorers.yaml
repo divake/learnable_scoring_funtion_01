@@ -64,8 +64,8 @@ plantnet:
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
   data_dir: /ssd_4TB/divake/learnable_scoring_funtion_01/data/plantnet_300k
-  batch_size: 32
-  num_workers: 4
+  batch_size: 128  # Batch size for dataloaders
+  num_workers: 4  # Number of workers for dataloaders
   model:
     type: vit
     vit:
@@ -74,8 +74,6 @@ plantnet:
       img_size: 224
       drop_path_rate: 0.1
       drop_rate: 0.1
-  batch_size: 128  # Batch size for dataloaders
-  num_workers: 4  # Number of workers for dataloaders
   # Run all models flag
   run_all_models: true  # Set to true to run analysis on all models
   # List of available VLM models

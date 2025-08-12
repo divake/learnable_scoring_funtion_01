@@ -323,21 +323,32 @@ class BaseScorer(ABC):
         
         if cache_dir.exists():
             try:
-                # Load calibration data
-                cal_probs_path = cache_dir / 'cal_probs.pt'
-                cal_targets_path = cache_dir / 'cal_targets.pt'
-                if cal_probs_path.exists() and cal_targets_path.exists():
-                    self.cached_data['cal_probs'] = torch.load(cal_probs_path)
-                    self.cached_data['cal_targets'] = torch.load(cal_targets_path)
-                    logging.info(f"Loaded cached calibration outputs from {cache_dir}")
-                    
-                # Load test data
-                test_probs_path = cache_dir / 'test_probs.pt'
-                test_targets_path = cache_dir / 'test_targets.pt'
-                if test_probs_path.exists() and test_targets_path.exists():
-                    self.cached_data['test_probs'] = torch.load(test_probs_path)
-                    self.cached_data['test_targets'] = torch.load(test_targets_path)
-                    logging.info(f"Loaded cached test outputs from {cache_dir}")
+                # First try to load model_outputs.pth (single file format)
+                model_outputs_path = cache_dir / 'model_outputs.pth'
+                if model_outputs_path.exists():
+                    cached_outputs = torch.load(model_outputs_path, weights_only=False)
+                    self.cached_data['cal_probs'] = cached_outputs['cal_probs']
+                    self.cached_data['cal_targets'] = cached_outputs['cal_targets']
+                    self.cached_data['test_probs'] = cached_outputs['test_probs']
+                    self.cached_data['test_targets'] = cached_outputs['test_targets']
+                    logging.info(f"Loaded cached model outputs from {model_outputs_path}")
+                else:
+                    # Fall back to separate file format
+                    # Load calibration data
+                    cal_probs_path = cache_dir / 'cal_probs.pt'
+                    cal_targets_path = cache_dir / 'cal_targets.pt'
+                    if cal_probs_path.exists() and cal_targets_path.exists():
+                        self.cached_data['cal_probs'] = torch.load(cal_probs_path)
+                        self.cached_data['cal_targets'] = torch.load(cal_targets_path)
+                        logging.info(f"Loaded cached calibration outputs from {cache_dir}")
+                        
+                    # Load test data
+                    test_probs_path = cache_dir / 'test_probs.pt'
+                    test_targets_path = cache_dir / 'test_targets.pt'
+                    if test_probs_path.exists() and test_targets_path.exists():
+                        self.cached_data['test_probs'] = torch.load(test_probs_path)
+                        self.cached_data['test_targets'] = torch.load(test_targets_path)
+                        logging.info(f"Loaded cached test outputs from {cache_dir}")
                     
                 if self.cached_data:
                     self.use_cache = True
@@ -627,35 +638,35 @@ class BaseScorer(ABC):
                     inputs, targets = inputs.to(self.device), targets.to(self.device)
                     outputs = self.model(inputs)
                     probabilities = F.softmax(outputs, dim=1)
-                
-                # Store true labels and probabilities for AUROC calculation
-                all_true_labels.extend(targets.cpu().numpy())
-                all_probabilities.append(probabilities.cpu().numpy())
-                
-                # Create prediction sets and collect metrics
-                prediction_sets, batch_true_scores, batch_false_scores, batch_all_scores = self.create_prediction_sets(outputs, targets)
-                
-                # Store all class scores for each sample
-                all_sample_scores.extend(batch_all_scores)
-                
-                # Update metrics
-                for i, pred_set in enumerate(prediction_sets):
-                    true_class = targets[i].item()
-                    set_size = len(pred_set)
-                    is_covered = true_class in pred_set
-                    covered_samples += int(is_covered)
-                    set_sizes.append(set_size)
-                    total_samples += 1
                     
-                    # Track empty sets
-                    if set_size == 0:
-                        empty_sets += 1
-                    else:
-                        non_empty_sizes.append(set_size)
-                
-                # Collect scores for distribution plots
-                true_class_scores.extend(batch_true_scores)
-                false_class_scores.extend(batch_false_scores)
+                    # Store true labels and probabilities for AUROC calculation
+                    all_true_labels.extend(targets.cpu().numpy())
+                    all_probabilities.append(probabilities.cpu().numpy())
+                    
+                    # Create prediction sets and collect metrics
+                    prediction_sets, batch_true_scores, batch_false_scores, batch_all_scores = self.create_prediction_sets(outputs, targets)
+                    
+                    # Store all class scores for each sample
+                    all_sample_scores.extend(batch_all_scores)
+                    
+                    # Update metrics
+                    for i, pred_set in enumerate(prediction_sets):
+                        true_class = targets[i].item()
+                        set_size = len(pred_set)
+                        is_covered = true_class in pred_set
+                        covered_samples += int(is_covered)
+                        set_sizes.append(set_size)
+                        total_samples += 1
+                        
+                        # Track empty sets
+                        if set_size == 0:
+                            empty_sets += 1
+                        else:
+                            non_empty_sizes.append(set_size)
+                    
+                    # Collect scores for distribution plots
+                    true_class_scores.extend(batch_true_scores)
+                    false_class_scores.extend(batch_false_scores)
         
         # Calculate metrics
         empirical_coverage = covered_samples / total_samples
