@@ -262,6 +262,8 @@ class BaseScorer(ABC):
                 from src.datasets.ham10000 import Dataset
             elif dataset_name == 'plantnet':
                 from src.datasets.plantnet import Dataset
+            elif dataset_name == 'places365':
+                from src.datasets.places365 import Dataset
             else:
                 raise ValueError(f"Dataset {dataset_name} not supported")
             
@@ -293,6 +295,9 @@ class BaseScorer(ABC):
         """Load cached model outputs if available."""
         # Determine model type from config
         model_config = self.config.get('model', {})
+        dataset_name = self.config['dataset']['name']
+        
+        logging.info(f"Checking for cached outputs for {dataset_name} dataset...")
         
         # Check if there's an explicit 'type' field
         if 'type' in model_config:
@@ -316,7 +321,26 @@ class BaseScorer(ABC):
             else:
                 raise ValueError(f"Cannot determine model type from architecture: {model_arch}")
         
-        cache_dir = Path(self.config['base_dir']) / 'cache' / self.config['dataset']['name'] / model_type
+        # Special handling for datasets with custom model classes
+        if dataset_name == 'ham10000' and model_type == 'VisionTransformer':
+            # Check if ViTForHAM10000 cache exists in nested structure
+            nested_cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / dataset_name / 'ViTForHAM10000'
+            if nested_cache_dir.exists():
+                cache_dir = nested_cache_dir
+                logging.info(f"Using HAM10000-specific cache directory: {cache_dir}")
+            else:
+                cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / model_type
+        elif dataset_name == 'plantnet' and model_type == 'VisionTransformer':
+            # Check for ViTWrapper cache (PlantNet uses a wrapper class)
+            vitwrapper_cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / dataset_name / 'ViTWrapper'
+            if vitwrapper_cache_dir.exists():
+                cache_dir = vitwrapper_cache_dir
+                logging.info(f"Using PlantNet ViTWrapper cache directory: {cache_dir}")
+            else:
+                # Fallback to standard VisionTransformer path
+                cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / model_type
+        else:
+            cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / model_type
         
         # Log which model type is being used
         logging.info(f"Using model type: {model_type} (cache dir: {cache_dir})")
@@ -1810,7 +1834,7 @@ def run_dataset(config: Dict[str, Any], dataset_name: str, scoring_name: str) ->
         logging.info(f"=== Starting evaluation for {dataset_desc} dataset using {scoring_name} scoring function ===")
         
         # Load dataset-specific configuration if exists
-        if dataset_name in ['imagenet', 'cifar100', 'cifar10']:
+        if dataset_name in ['imagenet', 'cifar100', 'cifar10', 'places365', 'ham10000']:
             config_path = os.path.join(config.get('base_dir', '.'), 'src', 'config', f'{dataset_name}.yaml')
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
@@ -1916,7 +1940,7 @@ def main():
     set_seed(seed)
     
     # Determine which datasets to run
-    available_datasets = ['cifar10', 'cifar100', 'imagenet', 'vlm', 'ham10000', 'plantnet']  # Updated supported datasets
+    available_datasets = ['cifar10', 'cifar100', 'imagenet', 'vlm', 'ham10000', 'plantnet', 'places365']  # Updated supported datasets
     if args.dataset == 'all':
         datasets = available_datasets
         logging.info(f"Running evaluation for all datasets: {', '.join(datasets)}")

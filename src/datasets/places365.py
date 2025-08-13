@@ -175,10 +175,10 @@ class Dataset(BaseDataset):
         )
         
         # Split validation set 50-50 for calibration and testing with class balance
-        # First, group samples by class
+        # First, group samples by class - access labels directly without loading images
         class_to_indices = {}
-        for idx in range(len(val_dataset)):
-            _, label = val_dataset[idx]
+        for idx in range(len(val_dataset.samples)):
+            _, label = val_dataset.samples[idx]  # Access label directly from samples list
             if label not in class_to_indices:
                 class_to_indices[label] = []
             class_to_indices[label].append(idx)

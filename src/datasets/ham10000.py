@@ -93,7 +93,7 @@ class Dataset(BaseDataset):
             self.test_transform = self._get_test_transforms(config)
     
     def setup(self):
-        """Setup HAM10000 dataset with pre-defined splits"""
+        """Setup HAM10000 dataset with proper validation split for conformal prediction"""
         data_dir = self.config.get('dataset', {}).get('data_dir', 'data/ham10000')
         img_dir = os.path.join(data_dir, 'images')
         splits_dir = os.path.join(data_dir, 'splits')
@@ -104,8 +104,51 @@ class Dataset(BaseDataset):
         
         # Load pre-defined splits
         train_df = pd.read_csv(os.path.join(splits_dir, 'train.csv'))
-        cal_df = pd.read_csv(os.path.join(splits_dir, 'validation.csv'))  # Use validation as calibration
-        test_df = pd.read_csv(os.path.join(splits_dir, 'test.csv'))
+        val_df = pd.read_csv(os.path.join(splits_dir, 'validation.csv'))
+        
+        # Split validation set 50-50 into calibration and test with class balance
+        # Group samples by class
+        class_to_indices = {}
+        for idx, row in val_df.iterrows():
+            class_label = row['dx']
+            if class_label not in class_to_indices:
+                class_to_indices[class_label] = []
+            class_to_indices[class_label].append(idx)
+        
+        cal_indices = []
+        test_indices = []
+        
+        # For each class, split samples 50-50
+        np.random.seed(self.config.get('seed', 42))  # For reproducible splits
+        for class_label in sorted(class_to_indices.keys()):
+            class_indices = class_to_indices[class_label]
+            np.random.shuffle(class_indices)
+            
+            # Split this class's samples equally
+            split_point = len(class_indices) // 2
+            
+            # Ensure at least one sample in each split if possible
+            if len(class_indices) >= 2:
+                cal_indices.extend(class_indices[:split_point] if split_point > 0 else [class_indices[0]])
+                test_indices.extend(class_indices[split_point:] if split_point < len(class_indices) else [class_indices[-1]])
+            elif len(class_indices) == 1:
+                # If only one sample, assign to calibration (more important for threshold)
+                cal_indices.append(class_indices[0])
+        
+        # Create calibration and test dataframes
+        cal_df = val_df.iloc[cal_indices].reset_index(drop=True)
+        test_df = val_df.iloc[test_indices].reset_index(drop=True)
+        
+        # Log class distribution
+        logging.info(f"Class-balanced split from validation set:")
+        logging.info(f"  Train: {len(train_df)} samples")
+        logging.info(f"  Calibration: {len(cal_df)} samples (~50% of validation)")
+        logging.info(f"  Test: {len(test_df)} samples (~50% of validation)")
+        
+        # Check class distribution in splits
+        cal_class_dist = cal_df['dx'].value_counts().sort_index()
+        test_class_dist = test_df['dx'].value_counts().sort_index()
+        logging.info(f"Classes in calibration: {len(cal_class_dist)}, in test: {len(test_class_dist)}")
         
         logging.info(f"Dataset sizes - Train: {len(train_df)}, Cal: {len(cal_df)}, Test: {len(test_df)}")
         
