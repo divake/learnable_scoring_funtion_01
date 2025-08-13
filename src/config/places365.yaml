@@ -1,0 +1,103 @@
+# Places365 specific configuration
+inherit: base_config.yaml
+
+# Device configuration
+device: 1
+
+# Caching configuration
+cache:
+  enabled: true
+  dir: cache  # Will be created under base_dir
+  compression: false  # Whether to use compression for cached files
+
+dataset:
+  name: places365
+  num_classes: 365
+  input_size: [224, 224]
+  mean: [0.485, 0.456, 0.406]  # ImageNet normalization for pretrained models
+  std: [0.229, 0.224, 0.225]
+  train_subset_size: 50000  # Use subset of training data for efficiency
+
+model:
+  # Using ViT model for Places365
+  type: vit
+  
+  # ViT configuration
+  vit:
+    architecture: vit_base_patch16_224
+    pretrained_path: models/vit_places365.pth
+    img_size: 224
+    drop_path_rate: 0.1
+    drop_rate: 0.1
+
+# Paths
+plot_dir: plots/places365
+log_dir: logs/places365
+
+# Training parameters
+num_epochs: 10
+batch_size: 64  # Reduced from 128 due to larger images
+target_coverage: 0.9
+
+# Training configuration
+training:
+  grad_clip:
+    enabled: true
+    max_norm: 0.5
+  loss_weights:
+    coverage: 4.0  # lambda1 - for coverage control
+    size: 1.5      # lambda2 - for set size control
+    margin: 0.2    # margin loss weight
+
+# Optimizer configuration
+optimizer:
+  name: 'AdamW'
+  params:
+    lr: 0.0001
+    weight_decay: 0.01
+  scheduler:
+    name: 'CosineAnnealingWarmRestarts'
+    params:
+      T_0: 5  # Restart every 5 epochs
+      T_mult: 1  # Keep constant restart period
+      eta_min: 0.00001  # Minimum learning rate
+
+# Model architecture
+scoring_function:
+  hidden_dims: [256, 128]  # Larger network for 365 classes
+  dropout: 0.2
+  l2_lambda: 0.005
+  activation:
+    name: 'LeakyReLU'
+    params:
+      negative_slope: 0.1
+  final_activation:
+    name: 'Sigmoid'  # For proper 0-1 range
+    params: {}
+
+# Training constraints
+tau:
+  min: 0.01
+  max: 15.0  # Higher max for 365 classes
+  window_size: 5
+
+# Set size constraints
+set_size:
+  target: 1
+  max: 10      # Higher max for 365 classes
+  margin: 1.5
+
+# Training dynamics
+training_dynamics:
+  stability_factor: 0.005
+  separation_factor: 2.0
+  perturbation_noise: 0.01
+  permutation_augmentation_prob: 0.5
+  coverage_tolerance: 0.02
+  coverage_closeness_threshold: 0.01
+  coverage_deficit_threshold: 0.02
+  size_penalty_boost: 1.5
+  coverage_boost: 2.0
+  xavier_init_gain: 1.0
+  num_workers: 2
+  ece_test_points: 10

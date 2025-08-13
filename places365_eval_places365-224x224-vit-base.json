@@ -1,6 +1,0 @@
-{
-  "model": "corenet-community/places365-224x224-vit-base",
-  "top1_accuracy": 0.24383561643835616,
-  "top5_accuracy": 1.295890410958904,
-  "num_samples": 36500
-}

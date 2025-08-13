@@ -21,3 +21,4 @@ docs/empty_set_handling.md
 results_static_conformal/
 migration/
 GEMINI.md
+pyrightconfig.json
