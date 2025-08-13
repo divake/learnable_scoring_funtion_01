@@ -35,45 +35,38 @@ plot_dir: plots/places365
 log_dir: logs/places365
 
 # Training parameters
-num_epochs: 10
-batch_size: 64  # Reduced from 128 due to larger images
+num_epochs: 15  # More epochs for convergence
+batch_size: 64
 target_coverage: 0.9
 
-# Training configuration
+# Training configuration - simplified and stable
 training:
   grad_clip:
     enabled: true
-    max_norm: 0.5
+    max_norm: 1.0  # Slightly higher for stability
   loss_weights:
-    coverage: 4.0  # lambda1 - for coverage control
-    size: 1.5      # lambda2 - for set size control
-    margin: 0.2    # margin loss weight
+    coverage: 10.0  # Higher weight for coverage (must hit 90%)
+    size: 2.0       # Moderate weight for size reduction
+    margin: 0.5     # Higher margin loss for better separation
 
-# Optimizer configuration
+# Optimizer configuration - stable learning
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.0001
+    lr: 0.001   # Higher learning rate for faster convergence
     weight_decay: 0.01
   scheduler:
     name: 'CosineAnnealingWarmRestarts'
     params:
-      T_0: 5  # Restart every 5 epochs
-      T_mult: 1  # Keep constant restart period
-      eta_min: 0.00001  # Minimum learning rate
+      T_0: 5
+      T_mult: 1
+      eta_min: 0.0001  # Higher minimum LR
 
-# Model architecture
+# Model architecture - clean and simple
 scoring_function:
-  hidden_dims: [256, 128]  # Larger network for 365 classes
-  dropout: 0.2
-  l2_lambda: 0.005
-  activation:
-    name: 'LeakyReLU'
-    params:
-      negative_slope: 0.1
-  final_activation:
-    name: 'Sigmoid'  # For proper 0-1 range
-    params: {}
+  hidden_dims: [256, 128]  # Simple 2-layer MLP
+  dropout: 0.1             # Light dropout
+  l2_lambda: 0.01          # Moderate L2 regularization
 
 # Training constraints
 tau:

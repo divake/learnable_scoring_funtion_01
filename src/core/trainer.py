@@ -1038,82 +1038,43 @@ class ScoringFunctionTrainer:
             for i in range(batch_size):
                 true_positions[i] = (sorted_indices[i] == targets[i]).nonzero(as_tuple=True)[0]
             
-            # Regularization term: penalize if true class is not among top-k
-            # Smooth transition of kreg to avoid sudden changes
-            kreg = 0.2 - 0.02 * min(self.current_epoch - 1, 5)  # 0.2 → 0.1 over 5 epochs
-            reg_term = torch.relu(true_positions.float() - kreg * self.scoring_fn.num_classes).mean()
+            # Core algorithm loss: Simple, stable, effective
             
-            # Coverage loss
+            # 1. Coverage Loss: Must maintain 90% coverage
             coverage_indicators = (target_scores <= tau).float()
             coverage = coverage_indicators.mean()
             coverage_loss = (coverage - target_coverage).pow(2)
             
-            # Size loss with penalty for large sets
+            # 2. Size Loss: Minimize average set size
             pred_sets = scores <= tau
             set_sizes = pred_sets.float().sum(dim=1)
             avg_size = set_sizes.mean()
+            size_loss = avg_size  # Simple: just minimize average size
             
-            # Quadratic penalty for sets > 2
-            # Smooth transition of lambda
-            lamda = 0.01 + 0.002 * min(self.current_epoch - 1, 5)  # 0.01 → 0.02 over 5 epochs
-            
-            # Adaptive target based on current performance
-            # Start with larger tolerance and gradually tighten
-            size_target = 2.0 - 0.1 * min(self.current_epoch - 1, 5)  # 2.0 → 1.5 over 5 epochs
-            size_penalty = torch.where(
-                set_sizes > size_target,
-                (set_sizes - size_target).pow(2),
-                torch.zeros_like(set_sizes)
-            ).mean()
-            size_loss = avg_size + lamda * size_penalty
-            
-            # Soft margin ranking loss (reduced weight)
-            margin = 0.5
+            # 3. Ranking Loss: True class should have lower score than false classes
+            # This is the key insight: push true scores down, false scores up
+            margin = 0.5  # Larger margin for better separation
             ranking_loss = torch.relu(target_scores.unsqueeze(1) - false_scores + margin).mean()
             
+            # 4. Diversity Loss: Encourage variety in scores to avoid uniformity
+            score_std = scores.std(dim=1).mean()  # Standard deviation across classes
+            diversity_loss = 1.0 / (score_std + 1e-6)  # Encourage higher std dev
             
-            # Smooth adaptive loss weighting based on epoch
-            # Gradually transition weights to avoid sudden jumps
-            epoch_factor = min(1.0, (self.current_epoch - 1) / 5.0)  # 0 to 1 over first 5 epochs
+            # Fixed, stable weights - no more erratic changes!
+            coverage_weight = self.lambda1  # From config: 10.0
+            size_weight = self.lambda2      # From config: 2.0 
+            ranking_weight = self.margin_weight  # From config: 0.5
+            diversity_weight = 0.1  # Small weight for diversity
             
-            # Coverage weight: start high (20) and gradually reduce to 10
-            coverage_weight = 20.0 - 10.0 * epoch_factor
-            
-            # Size weight: start low (1) and gradually increase to 5
-            size_weight = 1.0 + 4.0 * epoch_factor
-            
-            # Ranking weight: start low (0.2) and gradually increase to 1
-            ranking_weight = 0.2 + 0.8 * epoch_factor
-            
-            # Reg term weight: constant at 1.5
-            reg_weight = 1.5
-            
-            # Coverage-aware dynamic adjustment
-            # If coverage is good, focus more on size reduction
-            if abs(coverage.item() - target_coverage) < 0.01:  # Within 1% of target
-                size_weight *= 1.5
-                coverage_weight *= 0.8
-            elif coverage.item() < target_coverage - 0.02:  # More than 2% below target
-                coverage_weight *= 1.5
-                size_weight *= 0.5
-            
-            # Combined loss with smooth weights
+            # Simple combination - let the algorithm learn
             loss = (
                 coverage_weight * coverage_loss +
                 size_weight * size_loss +
                 ranking_weight * ranking_loss +
-                reg_weight * reg_term
+                diversity_weight * diversity_loss
             )
             
-            # Add stability loss if available
-            if hasattr(self.scoring_fn, 'stability_loss'):
-                loss = loss + self.scoring_fn.stability_loss
-            
-            # Add separation loss if available
-            if hasattr(self.scoring_fn, 'separation_loss'):
-                loss = loss + self.scoring_fn.separation_loss
-            
-            # Add L2 regularization if available
+            # Add L2 regularization to prevent overfitting
             if hasattr(self.scoring_fn, 'l2_reg'):
                 loss = loss + self.scoring_fn.l2_reg
             
