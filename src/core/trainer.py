@@ -1039,61 +1039,28 @@ class ScoringFunctionTrainer:
             for i in range(batch_size):
                 true_positions[i] = (sorted_indices[i] == targets[i]).nonzero(as_tuple=True)[0]
             
-            # Regularization term: penalize if true class is not among top-k
-            # Smooth transition of kreg to avoid sudden changes
-            kreg = 0.2 - 0.02 * min(self.current_epoch - 1, 5)  # 0.2 → 0.1 over 5 epochs
-            reg_term = torch.relu(true_positions.float() - kreg * self.scoring_fn.num_classes).mean()
+            # Simple, principled loss function for conformal prediction
             
-            # Coverage loss
+            # 1. Coverage Loss (Primary) - Ensure 90% coverage
             coverage_indicators = (target_scores <= tau).float()
             coverage = coverage_indicators.mean()
             coverage_loss = (coverage - target_coverage).pow(2)
             
-            # Size loss with penalty for large sets
+            # 2. Size Loss (Efficiency) - Minimize prediction set sizes
             pred_sets = scores <= tau
             set_sizes = pred_sets.float().sum(dim=1)
-            avg_size = set_sizes.mean()
+            size_loss = set_sizes.mean()
             
-            # Quadratic penalty for sets > 2
-            # Smooth transition of lambda
-            lamda = 0.01 + 0.002 * min(self.current_epoch - 1, 5)  # 0.01 → 0.02 over 5 epochs
+            # 3. Ranking Loss (Separation) - Push true classes below false classes
+            margin = 0.1
+            false_mean = false_scores.mean(dim=1)
+            ranking_loss = torch.relu(target_scores - false_mean + margin).mean()
             
-            # Adaptive target based on current performance
-            # Start with larger tolerance and gradually tighten
-            size_target = 2.0 - 0.1 * min(self.current_epoch - 1, 5)  # 2.0 → 1.5 over 5 epochs
-            size_penalty = torch.where(
-                set_sizes > size_target,
-                (set_sizes - size_target).pow(2),
-                torch.zeros_like(set_sizes)
-            ).mean()
-            size_loss = avg_size + lamda * size_penalty
-            
-            # Traditional ranking loss for conformal prediction
-            # For non-conformity scores: target_scores should be LOWER than false_scores
-            margin = 0.1  # Margin for separation
-            
-            # Compare target score with statistical measures of false scores
-            false_mean = false_scores.mean(dim=1)  # [batch_size]
-            false_min = false_scores.min(dim=1)[0]  # [batch_size]
-            
-            # Push true classes to have lower scores than false classes
-            # Loss = max(0, target_scores - false_scores + margin)
-            ranking_loss = (
-                torch.relu(target_scores - false_mean + margin).mean() * 0.5 +
-                torch.relu(target_scores - false_min + margin).mean() * 0.5
-            )
-            
-            
-            # Loss weights for traditional conformal prediction
-            coverage_weight = 1.0    # Ensure 90% coverage (primary objective)
-            size_weight = 0.5        # Minimize prediction set sizes
-            ranking_weight = 0.1     # Push true classes below false classes
-            
-            # Balanced combination for conformal prediction
+            # Simple, fixed loss combination
             loss = (
-                coverage_weight * coverage_loss +
-                size_weight * size_loss +
-                ranking_weight * ranking_loss
+                1.0 * coverage_loss +    # Primary: ensure coverage
+                0.5 * size_loss +        # Secondary: minimize set size  
+                0.1 * ranking_loss       # Guidance: improve separation
             )
             
             # Add stability loss if available

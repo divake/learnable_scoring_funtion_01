@@ -10,18 +10,18 @@ from typing import Optional, Tuple, Dict
 class ScoringFunction(nn.Module):
     def __init__(self, input_dim=None, hidden_dims=[256, 128], output_dim=None, config=None):
         """
-        Learnable Scoring Function for Conformal Prediction.
+        Simple Learnable Scoring Function for Conformal Prediction.
         
         Core Algorithm:
         1. Takes softmax probabilities from base model
-        2. Learns to score each class optimally for conformal prediction
-        3. Pushes true classes toward low scores (close to 0)
-        4. Pushes false classes toward high scores (1, 2, 5, etc.)
-        5. Maintains 90% coverage while minimizing set size
+        2. Extracts essential features per class
+        3. MLP learns to score each class for conformal prediction
+        4. Training: true classes → low scores, false classes → high scores
+        5. Simple loss: coverage + size + ranking (no scheduling)
         
         Args:
             input_dim: Number of classes
-            hidden_dims: MLP hidden dimensions
+            hidden_dims: MLP hidden dimensions  
             config: Configuration containing training parameters
         """
         super().__init__()
@@ -134,10 +134,10 @@ class ScoringFunction(nn.Module):
     
     def forward(self, probs):
         """
-        Pure learnable scoring function - MLP learns optimal scoring from scratch.
+        Simple learnable scoring function.
         
-        Strategy: Let the MLP discover the best scoring function for the specific
-        data distribution. No constraints or baselines - pure learning.
+        Strategy: MLP learns optimal scoring from essential features.
+        Simple, principled approach without complex training dynamics.
         """
         # Ensure input has correct shape
         if probs.dim() == 1:
