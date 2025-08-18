@@ -19,7 +19,7 @@ dataset:
 
 model:
   # Choose between 'resnet' or 'vit'
-  type: vit  # Options: 'resnet' or 'vit'
+  type: resnet  # Options: 'resnet' or 'vit'
   
   # ResNet configuration (used when type: resnet)
   resnet:
@@ -96,7 +96,6 @@ training_dynamics:
   stability_factor: 0.005  # Reduced from 0.02 for less regularization
   separation_factor: 2.0  # Kept the same
   perturbation_noise: 0.01
-  permutation_augmentation_prob: 0.5
   coverage_tolerance: 0.02
   coverage_closeness_threshold: 0.01
   coverage_deficit_threshold: 0.02

@@ -173,9 +173,11 @@ class Dataset(BaseDataset):
             
             # Load pretrained weights
             pretrained_path = resnet_config['pretrained_path']
-            # config['device'] is already a torch.device or string like 'cuda:1'
+            # Handle different device formats
             if isinstance(self.config['device'], str):
                 device = torch.device(self.config['device'])
+            elif isinstance(self.config['device'], int):
+                device = torch.device(f"cuda:{self.config['device']}")
             else:
                 device = self.config['device']
             state_dict = torch.load(
@@ -216,9 +218,11 @@ class Dataset(BaseDataset):
             
             # Load pretrained weights
             pretrained_path = vit_config['pretrained_path']
-            # config['device'] is already a torch.device or string like 'cuda:1'
+            # Handle different device formats
             if isinstance(self.config['device'], str):
                 device = torch.device(self.config['device'])
+            elif isinstance(self.config['device'], int):
+                device = torch.device(f"cuda:{self.config['device']}")
             else:
                 device = self.config['device']
             state_dict = torch.load(

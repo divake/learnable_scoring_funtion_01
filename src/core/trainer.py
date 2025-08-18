@@ -9,8 +9,6 @@ import os
 import glob
 import numpy as np
 import matplotlib.pyplot as plt
-import json
-import hashlib
 
 from src.utils.visualization import (
     plot_training_curves, 
@@ -25,6 +23,7 @@ from .advanced_metrics import (
     save_metrics_to_csv,
     calculate_ece
 )
+from .cache_generator import HighQualityCacheGenerator
 
 class ScoringFunctionTrainer:
     def __init__(self, base_model, scoring_fn, train_loader, cal_loader, 
@@ -69,11 +68,25 @@ class ScoringFunctionTrainer:
         }
         self.cached_loaders = {}
         
-        # Setup cache directory
-        cache_config = config.get('cache', {'enabled': True, 'dir': 'cache'})
-        self.use_cache = cache_config.get('enabled', True)
-        self.cache_dir = os.path.join(config['base_dir'], cache_config.get('dir', 'cache'))
+        # Setup cache directory - no fallback, must be explicitly defined
+        if 'cache' not in config:
+            raise ValueError("config['cache'] must be explicitly defined")
+        if 'enabled' not in config['cache']:
+            raise ValueError("config['cache']['enabled'] must be explicitly defined")
+        if 'dir' not in config['cache']:
+            raise ValueError("config['cache']['dir'] must be explicitly defined")
+        
+        self.use_cache = config['cache']['enabled']
+        self.cache_dir = os.path.join(config['base_dir'], config['cache']['dir'])
         os.makedirs(self.cache_dir, exist_ok=True)
+    
+    def _get_required_config(self, section: str, key: str):
+        """Get config value with no fallback - fail if not present"""
+        if section not in self.config:
+            raise ValueError(f"config['{section}'] must be explicitly defined")
+        if key not in self.config[section]:
+            raise ValueError(f"config['{section}']['{key}'] must be explicitly defined")
+        return self.config[section][key]
         
     def _setup_optimizer(self, num_epochs):
         """Setup optimizer and scheduler based on configuration"""
@@ -110,269 +123,43 @@ class ScoringFunctionTrainer:
             
         return optimizer, scheduler
     
-    def _generate_cache_path(self):
-        """Generate a unique path for caching based on model and dataset"""
-        # Generate a unique identifier for the model
-        model_str = str(self.base_model.__class__.__name__)
-        # Use dataset name from config
-        dataset_name = self.config['dataset']['name']
-        # Create cache dir structure
-        cache_subdir = os.path.join(self.cache_dir, dataset_name, model_str)
-        os.makedirs(cache_subdir, exist_ok=True)
-        return cache_subdir
     
-    def _compute_model_hash(self):
-        """Compute hash of model parameters to ensure cache validity"""
-        model_state = self.base_model.state_dict()
-        hasher = hashlib.md5()
-        
-        # Sort keys to ensure consistent order
-        for key in sorted(model_state.keys()):
-            # Convert tensor to bytes
-            param_bytes = model_state[key].cpu().numpy().tobytes()
-            hasher.update(param_bytes)
-            
-        return hasher.hexdigest()
-    
-    def _save_cache_metadata(self, cache_dir):
-        """Save metadata about the cache to ensure validity"""
-        metadata = {
-            'model_name': self.base_model.__class__.__name__,
-            'model_hash': self._compute_model_hash(),
-            'dataset': self.config['dataset']['name'],
-            'timestamp': str(np.datetime64('now')),
-            'dataset_sizes': {
-                'train': len(self.train_loader.dataset),
-                'cal': len(self.cal_loader.dataset),
-                'test': len(self.test_loader.dataset),
-            }
-        }
-        
-        metadata_path = os.path.join(cache_dir, 'metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-            
-        return metadata
-    
-    def _check_cache_validity(self, cache_dir):
-        """Check if existing cache is valid for current model and dataset"""
-        metadata_path = os.path.join(cache_dir, 'metadata.json')
-        
-        if not os.path.exists(metadata_path):
-            return False
-            
-        try:
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
-                
-            # Check if model hash matches
-            current_hash = self._compute_model_hash()
-            if metadata.get('model_hash') != current_hash:
-                logging.info("Model parameters have changed. Cache will be regenerated.")
-                return False
-                
-            # Check if dataset sizes match
-            if metadata.get('dataset_sizes', {}).get('train') != len(self.train_loader.dataset) or \
-               metadata.get('dataset_sizes', {}).get('cal') != len(self.cal_loader.dataset) or \
-               metadata.get('dataset_sizes', {}).get('test') != len(self.test_loader.dataset):
-                logging.info("Dataset sizes have changed. Cache will be regenerated.")
-                return False
-                
-            return True
-            
-        except Exception as e:
-            logging.warning(f"Error checking cache validity: {e}")
-            return False
-    
-    def cache_base_model_outputs(self, chunk_size=10000, enable_memory_monitoring=True):
-        """Pre-compute and cache all base model outputs to disk using chunked processing
-        
-        Args:
-            chunk_size: Number of samples to process before saving to disk (default: 10000)
-            enable_memory_monitoring: Whether to enable memory monitoring and cleanup
-        """
+    def cache_base_model_outputs(self, chunk_size=None, enable_memory_monitoring=True):
+        """Pre-compute and cache all base model outputs using the HighQualityCacheGenerator"""
         if not self.use_cache:
             logging.info("Caching is disabled in config")
             return
             
-        # Generate cache path
-        cache_dir = self._generate_cache_path()
+        # Create cache generator
+        cache_generator = HighQualityCacheGenerator(
+            base_model=self.base_model,
+            config=self.config,
+            device=self.device
+        )
         
-        # Check if valid cache exists
-        if self._check_cache_validity(cache_dir):
-            logging.info("Found valid cache. Loading cached outputs...")
-            self._load_cached_outputs(cache_dir)
-            return
-            
-        logging.info("Generating new cache for base model outputs using chunked processing...")
-        logging.info(f"Chunk size: {chunk_size} samples")
-        self.base_model.eval()
+        # Generate optimized cache using the dedicated module
+        dataloaders = {
+            'train': self.train_loader,
+            'cal': self.cal_loader,
+            'test': self.test_loader
+        }
         
-        # Import memory monitoring utilities
-        import gc
-        import psutil
-        import tempfile
+        cache_path = cache_generator.generate_cache_optimized(
+            dataloaders=dataloaders,
+            chunk_size=chunk_size,
+            enable_memory_monitoring=enable_memory_monitoring
+        )
         
-        # Process each dataset
-        for name, loader in [
-            ('train', self.train_loader), 
-            ('cal', self.cal_loader), 
-            ('test', self.test_loader)
-        ]:
-            logging.info(f"Processing {name} dataset...")
-            
-            # Create temporary directory for chunks
-            temp_dir = tempfile.mkdtemp(prefix=f'cache_{name}_')
-            chunk_files_probs = []
-            chunk_files_targets = []
-            
-            # Process in chunks
-            chunk_probs = []
-            chunk_targets = []
-            samples_processed = 0
-            chunk_idx = 0
-            
-            # Monitor initial memory
-            if enable_memory_monitoring:
-                process = psutil.Process()
-                initial_memory = process.memory_info().rss / 1024 / 1024 / 1024  # GB
-                logging.info(f"Initial memory usage: {initial_memory:.2f} GB")
-            
-            with torch.no_grad():
-                for batch_idx, (inputs, targets) in enumerate(tqdm(loader, desc=f"Caching {name}")):
-                    inputs = inputs.to(self.device)
-                    
-                    # Get softmax probabilities from base model
-                    logits = self.base_model(inputs)
-                    probs = torch.softmax(logits, dim=1)
-                    
-                    # Move to CPU immediately to free GPU memory
-                    probs = probs.cpu()
-                    del logits  # Explicitly delete to free memory
-                    
-                    # Store probabilities and targets
-                    chunk_probs.append(probs)
-                    chunk_targets.append(targets)
-                    samples_processed += len(targets)
-                    
-                    # Save chunk when reaching chunk_size or at the end
-                    if samples_processed >= chunk_size or batch_idx == len(loader) - 1:
-                        # Concatenate current chunk
-                        chunk_probs_tensor = torch.cat(chunk_probs, dim=0)
-                        chunk_targets_tensor = torch.cat(chunk_targets, dim=0)
-                        
-                        # Save chunk to temporary file
-                        chunk_probs_path = os.path.join(temp_dir, f'probs_chunk_{chunk_idx}.pt')
-                        chunk_targets_path = os.path.join(temp_dir, f'targets_chunk_{chunk_idx}.pt')
-                        
-                        torch.save(chunk_probs_tensor, chunk_probs_path)
-                        torch.save(chunk_targets_tensor, chunk_targets_path)
-                        
-                        chunk_files_probs.append(chunk_probs_path)
-                        chunk_files_targets.append(chunk_targets_path)
-                        
-                        logging.info(f"Saved chunk {chunk_idx} with {len(chunk_targets_tensor)} samples")
-                        
-                        # Clear memory
-                        del chunk_probs_tensor, chunk_targets_tensor
-                        chunk_probs = []
-                        chunk_targets = []
-                        samples_processed = 0
-                        chunk_idx += 1
-                        
-                        # Force garbage collection
-                        gc.collect()
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        
-                        # Monitor memory after chunk
-                        if enable_memory_monitoring:
-                            current_memory = process.memory_info().rss / 1024 / 1024 / 1024  # GB
-                            logging.info(f"Memory usage after chunk {chunk_idx}: {current_memory:.2f} GB")
-            
-            # Merge all chunks into final files
-            logging.info(f"Merging {len(chunk_files_probs)} chunks for {name} dataset...")
-            
-            # Load and concatenate all chunks
-            final_probs = []
-            final_targets = []
-            
-            for i, (probs_file, targets_file) in enumerate(zip(chunk_files_probs, chunk_files_targets)):
-                chunk_probs = torch.load(probs_file)
-                chunk_targets = torch.load(targets_file)
-                final_probs.append(chunk_probs)
-                final_targets.append(chunk_targets)
-                
-                # Delete chunk files immediately after loading
-                os.remove(probs_file)
-                os.remove(targets_file)
-                
-                # Periodically concatenate and save to avoid memory buildup
-                if (i + 1) % 5 == 0 or i == len(chunk_files_probs) - 1:
-                    if len(final_probs) > 0:
-                        # Concatenate accumulated chunks
-                        accumulated_probs = torch.cat(final_probs, dim=0)
-                        accumulated_targets = torch.cat(final_targets, dim=0)
-                        
-                        # Save or append to final file
-                        probs_path = os.path.join(cache_dir, f'{name}_probs.pt')
-                        targets_path = os.path.join(cache_dir, f'{name}_targets.pt')
-                        
-                        if i == len(chunk_files_probs) - 1:
-                            # Last iteration - save final result
-                            if os.path.exists(probs_path):
-                                # Append to existing data
-                                existing_probs = torch.load(probs_path)
-                                existing_targets = torch.load(targets_path)
-                                final_probs_tensor = torch.cat([existing_probs, accumulated_probs], dim=0)
-                                final_targets_tensor = torch.cat([existing_targets, accumulated_targets], dim=0)
-                                del existing_probs, existing_targets
-                            else:
-                                final_probs_tensor = accumulated_probs
-                                final_targets_tensor = accumulated_targets
-                            
-                            torch.save(final_probs_tensor, probs_path)
-                            torch.save(final_targets_tensor, targets_path)
-                            logging.info(f"Saved final cache for {name}: {len(final_targets_tensor)} samples")
-                        else:
-                            # Intermediate save
-                            if os.path.exists(probs_path):
-                                # Append to existing
-                                existing_probs = torch.load(probs_path)
-                                existing_targets = torch.load(targets_path)
-                                merged_probs = torch.cat([existing_probs, accumulated_probs], dim=0)
-                                merged_targets = torch.cat([existing_targets, accumulated_targets], dim=0)
-                                del existing_probs, existing_targets
-                            else:
-                                merged_probs = accumulated_probs
-                                merged_targets = accumulated_targets
-                            
-                            torch.save(merged_probs, probs_path)
-                            torch.save(merged_targets, targets_path)
-                        
-                        # Clear memory
-                        del accumulated_probs, accumulated_targets
-                        if 'final_probs_tensor' in locals():
-                            del final_probs_tensor, final_targets_tensor
-                        if 'merged_probs' in locals():
-                            del merged_probs, merged_targets
-                        final_probs = []
-                        final_targets = []
-                        gc.collect()
-            
-            # Clean up temporary directory
-            os.rmdir(temp_dir)
-            
-            # Final memory cleanup
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        # Load the cached data
+        cached_loaders = cache_generator.load_cache(cache_path)
         
-        # Save metadata
-        self._save_cache_metadata(cache_dir)
+        # Update our loaders to use cached data
+        self.train_loader = cached_loaders['train']
+        self.cal_loader = cached_loaders['cal']
+        self.test_loader = cached_loaders['test']
         
-        # Load the cached outputs
-        self._load_cached_outputs(cache_dir)
+        # Mark as cached
+        self.is_cached = True
         
         # Free up GPU memory by moving base model to CPU if needed
         if torch.cuda.is_available():
@@ -380,57 +167,6 @@ class ScoringFunctionTrainer:
             torch.cuda.empty_cache()
             logging.info("Moved base model to CPU to free GPU memory")
     
-    def _load_cached_outputs(self, cache_dir):
-        """Load cached outputs from disk and create new data loaders"""
-        from torch.utils.data import TensorDataset, DataLoader, Subset
-        
-        self.cached_datasets = {}
-        self.cached_loaders = {}
-        
-        # Load each dataset
-        for name in ['train', 'cal', 'test']:
-            probs_path = os.path.join(cache_dir, f'{name}_probs.pt')
-            targets_path = os.path.join(cache_dir, f'{name}_targets.pt')
-            
-            if not os.path.exists(probs_path) or not os.path.exists(targets_path):
-                raise FileNotFoundError(f"Cache files for {name} dataset not found")
-                
-            probs = torch.load(probs_path, weights_only=True)
-            targets = torch.load(targets_path, weights_only=True)
-            
-            # Create dataset
-            dataset = TensorDataset(probs, targets)
-            
-            # Apply subset sampling for training data if configured
-            if name == 'train':
-                subset_fraction = self.config.get('training_subset_fraction', 1.0)
-                if subset_fraction < 1.0:
-                    total_samples = len(dataset)
-                    subset_size = int(total_samples * subset_fraction)
-                    # Random subset indices
-                    indices = torch.randperm(total_samples)[:subset_size]
-                    dataset = Subset(dataset, indices)
-                    logging.info(f"Using {subset_fraction*100:.0f}% of training data: {subset_size}/{total_samples} samples")
-            
-            self.cached_datasets[name] = dataset
-            
-            # Create dataloader
-            shuffle = (name == 'train')  # Only shuffle training data
-            self.cached_loaders[name] = DataLoader(
-                dataset,
-                batch_size=self.config['batch_size'],
-                shuffle=shuffle,
-                num_workers=self.config.get('training_dynamics', {}).get('num_workers', 2),  # Configurable workers
-                pin_memory=True
-            )
-        
-        # Update the loaders
-        self.train_loader = self.cached_loaders['train']
-        self.cal_loader = self.cached_loaders['cal']
-        self.test_loader = self.cached_loaders['test']
-        
-        self.is_cached = True
-        logging.info("Successfully loaded cached outputs")
     
     def _init_history(self):
         """Initialize training history dictionary"""
@@ -498,7 +234,7 @@ class ScoringFunctionTrainer:
             'ece': history['ece_values'],
             'coverage': history['val_coverages'],
             'set_size': history['val_sizes'],
-            'non_empty_set_size': history.get('val_non_empty_sizes', history['val_sizes']),  # Fallback if not available
+            'non_empty_set_size': history['val_non_empty_sizes'] if 'val_non_empty_sizes' in history else history['val_sizes'],
             'efficiency': [cov/size if size > 0 else 0 for cov, size in zip(history['val_coverages'], history['val_sizes'])]
         }
         
@@ -570,7 +306,7 @@ class ScoringFunctionTrainer:
     
     def _calculate_target_coverage_metrics(self, history, target_coverage=0.9, tolerance=None):
         if tolerance is None:
-            tolerance = self.config.get('training_dynamics', {}).get('coverage_tolerance', 0.02)
+            tolerance = self._get_required_config('training_dynamics', 'coverage_tolerance')
         """
         Calculate average set size and coverage for epochs where coverage is close to target.
         
@@ -795,7 +531,7 @@ class ScoringFunctionTrainer:
         target_metrics = self._calculate_target_coverage_metrics(
             history, 
             target_coverage=target_coverage,
-            tolerance=self.config.get('training_dynamics', {}).get('coverage_tolerance', 0.02)  # Configurable tolerance
+            tolerance=self._get_required_config('training_dynamics', 'coverage_tolerance')
         )
         
         if target_metrics['num_epochs'] > 0:
@@ -868,9 +604,10 @@ class ScoringFunctionTrainer:
             binary_labels[i, all_true_labels[i]] = 1
         
         # Flatten for AUROC calculation
-        # Since lower scores are better in conformal prediction, we negate the scores
-        # so that AUROC calculation (which expects higher = better) works correctly
-        scores_flat = -all_scores.flatten()  # Negate so higher AUROC means better scoring
+        # Our scoring function should produce: high prob classes → low scores, low prob classes → high scores
+        # AUROC expects: true positives to have higher scores than false positives
+        # So we negate our scores since our good predictions have low scores
+        scores_flat = -all_scores.flatten()  # Negate: low conformal scores → high AUROC scores
         labels_flat = binary_labels.flatten()
         
         # Calculate AUROC for the scoring function
@@ -880,7 +617,7 @@ class ScoringFunctionTrainer:
         # 2. ECE for conformal prediction:
         # Measure calibration at different coverage levels
         # This is different from traditional ECE
-        num_points = self.config.get('training_dynamics', {}).get('ece_test_points', 10)
+        num_points = self._get_required_config('training_dynamics', 'ece_test_points')
         target_coverages = np.linspace(0.1, 0.99, num_points)  # Configurable test points
         actual_coverages = []
         
@@ -972,7 +709,7 @@ class ScoringFunctionTrainer:
         return scores, None, probs
 
     def train_epoch(self, optimizer, tau, tau_config, set_size_config):
-        """Train for one epoch with permutation augmentation for class-agnostic learning"""
+        """Train for one epoch"""
         self.scoring_fn.train()
         loss_meter = AverageMeter()
         coverage_meter = AverageMeter()
@@ -984,8 +721,6 @@ class ScoringFunctionTrainer:
         # Get target coverage from config
         target_coverage = self.config['target_coverage']
         
-        # Track permutation effectiveness (for debugging)
-        perm_count = 0
         
         pbar = tqdm(self.train_loader, desc='Training')
         for inputs, targets in pbar:
@@ -993,36 +728,6 @@ class ScoringFunctionTrainer:
             targets = targets.to(self.device)
             batch_size = inputs.size(0)
             
-            # Permutation augmentation for class-agnostic learning
-            # This ensures the model treats all classes equally
-            perm_prob = self.config.get('training_dynamics', {}).get('permutation_augmentation_prob', 0.5)
-            use_permutation = torch.rand(1).item() < perm_prob  # Configurable permutation probability
-            if use_permutation:
-                perm_count += 1
-                # Generate random permutation for each sample in batch
-                # This allows different permutations within the same batch
-                permuted_inputs = []
-                permuted_targets = []
-                
-                for i in range(batch_size):
-                    perm = torch.randperm(self.scoring_fn.num_classes, device=self.device)
-                    # Permute the probability vector
-                    if self.is_cached:
-                        # If using cached probabilities
-                        permuted_input = inputs[i][perm]
-                    else:
-                        # If using raw inputs, we need to get probabilities first
-                        with torch.no_grad():
-                            logits = self.base_model(inputs[i:i+1])
-                            probs = torch.softmax(logits, dim=1)
-                            permuted_input = probs[0][perm]
-                    
-                    permuted_inputs.append(permuted_input)
-                    # Update target to new position
-                    permuted_targets.append((perm == targets[i]).nonzero(as_tuple=True)[0].item())
-                
-                inputs = torch.stack(permuted_inputs) if self.is_cached else inputs
-                targets = torch.tensor(permuted_targets, device=self.device, dtype=targets.dtype)
             
             scores, target_scores, _ = self._compute_scores(inputs, targets)
             
@@ -1049,18 +754,13 @@ class ScoringFunctionTrainer:
             # 2. Size Loss (Efficiency) - Minimize prediction set sizes
             pred_sets = scores <= tau
             set_sizes = pred_sets.float().sum(dim=1)
-            size_loss = set_sizes.mean()
+            avg_size = set_sizes.mean()
+            size_loss = avg_size
             
-            # 3. Ranking Loss (Separation) - Push true classes below false classes
-            margin = 0.1
-            false_mean = false_scores.mean(dim=1)
-            ranking_loss = torch.relu(target_scores - false_mean + margin).mean()
-            
-            # Simple, fixed loss combination
+            # Simple 2-component loss - let MLP learn separation itself
             loss = (
-                1.0 * coverage_loss +    # Primary: ensure coverage
-                0.5 * size_loss +        # Secondary: minimize set size  
-                0.1 * ranking_loss       # Guidance: improve separation
+                1.0 * coverage_loss +    # Primary: ensure 90% coverage
+                0.5 * size_loss          # Secondary: minimize set size
             )
             
             # Add stability loss if available
@@ -1104,9 +804,6 @@ class ScoringFunctionTrainer:
                 'Size': f'{size_meter.avg:.3f}'
             })
         
-        # Debug: Print permutation usage
-        total_batches = len(self.train_loader)
-        logging.info(f"Permutation augmentation used in {perm_count}/{total_batches} batches ({perm_count/total_batches*100:.1f}%)")
         
         return loss_meter.avg, coverage_meter.avg, size_meter.avg
     
@@ -1188,7 +885,7 @@ class ScoringFunctionTrainer:
             val_sizes=history['val_sizes'],
             tau_values=history['tau_values'],
             save_dir=plot_dir,
-            val_non_empty_sizes=history.get('val_non_empty_sizes', None)
+            val_non_empty_sizes=history['val_non_empty_sizes'] if 'val_non_empty_sizes' in history else None
         )
         plt.close()
         

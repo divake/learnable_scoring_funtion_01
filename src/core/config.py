@@ -108,5 +108,7 @@ class ConfigManager:
         return key in self.config
     
     def get(self, key, default=None):
-        """Safe dictionary-like access with default"""
+        """Safe dictionary-like access with default (deprecated - use direct access)"""
+        if key not in self.config and default is None:
+            raise ValueError(f"config['{key}'] must be explicitly defined")
         return self.config.get(key, default) 

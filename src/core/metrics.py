@@ -63,9 +63,15 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
         end_idx = min(len(sorted_scores) - 1, idx + window_size // 2)  # Asymmetric window
         window_scores = sorted_scores[start_idx:end_idx+1]
         # Weight lower scores more to ensure coverage
-        # Get smoothing weights from tau_config
-        weight_start = tau_config.get('smoothing_weights', {}).get('start', 1.5)
-        weight_end = tau_config.get('smoothing_weights', {}).get('end', 1.0)
+        # Get smoothing weights - no fallback, must be explicitly defined
+        if 'smoothing_weights' not in tau_config:
+            raise ValueError("tau_config['smoothing_weights'] must be explicitly defined when using smoothing")
+        if 'start' not in tau_config['smoothing_weights']:
+            raise ValueError("tau_config['smoothing_weights']['start'] must be explicitly defined")
+        if 'end' not in tau_config['smoothing_weights']:
+            raise ValueError("tau_config['smoothing_weights']['end'] must be explicitly defined")
+        weight_start = tau_config['smoothing_weights']['start']
+        weight_end = tau_config['smoothing_weights']['end']
         weights = torch.linspace(weight_start, weight_end, len(window_scores))
         tau = (window_scores * weights).sum() / weights.sum()
     else:

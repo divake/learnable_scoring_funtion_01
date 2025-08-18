@@ -10,7 +10,6 @@ training_dynamics:
   stability_factor: 0.05  # Stability regularization strength
   separation_factor: 0.5  # Separation loss weight
   perturbation_noise: 0.01  # Noise level for stability checks
-  permutation_augmentation_prob: 0.5  # Probability of applying permutation during training
   coverage_tolerance: 0.02  # Tolerance for coverage checks (±2%)
   coverage_closeness_threshold: 0.01  # When coverage is "close enough"
   coverage_deficit_threshold: 0.02  # When to boost coverage loss

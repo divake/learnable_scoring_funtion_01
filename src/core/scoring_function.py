@@ -10,17 +10,17 @@ from typing import Optional, Tuple, Dict
 class ScoringFunction(nn.Module):
     def __init__(self, input_dim=None, hidden_dims=[256, 128], output_dim=None, config=None):
         """
-        Simple Learnable Scoring Function for Conformal Prediction.
+        Full Softmax Learnable Scoring Function for Conformal Prediction.
         
         Core Algorithm:
         1. Takes softmax probabilities from base model
-        2. Extracts essential features per class
-        3. MLP learns to score each class for conformal prediction
+        2. For each class, MLP sees ENTIRE probability distribution  
+        3. No feature engineering - pure end-to-end learning
         4. Training: true classes → low scores, false classes → high scores
-        5. Simple loss: coverage + size + ranking (no scheduling)
+        5. Simple loss: coverage + size (no ranking, no scheduling)
         
         Args:
-            input_dim: Number of classes
+            input_dim: Number of classes (MLP input dimension)
             hidden_dims: MLP hidden dimensions  
             config: Configuration containing training parameters
         """
@@ -46,12 +46,12 @@ class ScoringFunction(nn.Module):
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         
-        # Simple but effective feature set: only essential features
-        # Core features: prob, rank, relative_to_max, log_prob, entropy
-        feature_dim = 5
+        # Full softmax approach: MLP sees entire probability distribution + class identity
+        # Input dimension = 2 * number of classes (prob_dist + class_indicator)
+        feature_dim = 2 * self.num_classes
         
-        # Ultra-stable MLP architecture - much smaller and simpler
-        hidden_dims = [64, 32]  # Much smaller network
+        # MLP architecture for full softmax input
+        hidden_dims = [128, 64]  # Larger network for richer input
         layers = []
         prev_dim = feature_dim
         
@@ -68,8 +68,10 @@ class ScoringFunction(nn.Module):
         
         self.scoring_network = nn.Sequential(*layers)
         
-        # L2 regularization
-        self.l2_lambda = config['scoring_function'].get('l2_lambda', 0.01)
+        # L2 regularization - no fallback, must be explicitly defined
+        if 'scoring_function' not in config or 'l2_lambda' not in config['scoring_function']:
+            raise ValueError("config['scoring_function']['l2_lambda'] must be explicitly defined")
+        self.l2_lambda = config['scoring_function']['l2_lambda']
         
         # Initialize weights
         self._init_weights()
@@ -78,66 +80,47 @@ class ScoringFunction(nn.Module):
         """Initialize weights for stable learning"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
+                # Standard Xavier initialization
                 nn.init.xavier_uniform_(module.weight, gain=1.0)
                 if module.bias is not None:
+                    # Zero bias for sigmoid to start near 0.5 output
                     nn.init.zeros_(module.bias)
     
-    def compute_features(self, probs: torch.Tensor) -> torch.Tensor:
+    def prepare_full_softmax_input(self, probs: torch.Tensor) -> torch.Tensor:
         """
-        Extract essential features for scoring function.
+        Prepare full softmax distribution as input for each class scoring.
         
-        Key insight: Keep it simple - let the MLP learn the complex patterns.
-        Only provide the most fundamental features that help distinguish
-        true vs false classes.
+        Key insight: Let MLP see the entire probability distribution PLUS 
+        which class it's scoring. This gives class-specific context.
         
         Args:
             probs: [B, C] probability distributions
             
         Returns:
-            features: [B, C, 5] tensor of features per class
+            full_context: [B, C, C+1] - for each class, provide full softmax + class indicator
         """
         batch_size, num_classes = probs.shape
-        device = probs.device
         
-        # 1. Raw probability (most important signal)
-        prob_feature = probs.unsqueeze(-1)  # [B, C, 1]
+        # For each class, provide the entire softmax distribution as context
+        full_context = probs.unsqueeze(1).expand(-1, num_classes, -1)  # [B, C, C]
         
-        # 2. Rank within distribution (normalized)
-        sorted_indices = torch.argsort(probs, dim=1, descending=True)
-        ranks = torch.zeros_like(probs)
-        for b in range(batch_size):
-            ranks[b, sorted_indices[b]] = torch.arange(num_classes, device=device).float()
-        ranks = ranks / (num_classes - 1)  # Normalize to [0, 1]
-        rank_feature = ranks.unsqueeze(-1)  # [B, C, 1]
+        # Add class identity indicators - this is the key fix!
+        # Create one-hot encoding for which class we're scoring
+        class_indicators = torch.eye(num_classes, device=probs.device, dtype=probs.dtype)  # [C, C]
+        class_indicators = class_indicators.unsqueeze(0).expand(batch_size, -1, -1)  # [B, C, C]
         
-        # 3. Relative to max probability
-        p_max = probs.max(dim=1, keepdim=True)[0]
-        relative_feature = (probs / (p_max + 1e-8)).unsqueeze(-1)  # [B, C, 1]
+        # Concatenate probability distribution with class identity
+        # Now each class gets: [prob_dist, which_class_am_I]
+        full_context = torch.cat([full_context, class_indicators], dim=-1)  # [B, C, C+C] = [B, C, 2C]
         
-        # 4. Log probability (for gradient stability)
-        log_prob_feature = torch.log(probs + 1e-8).unsqueeze(-1)  # [B, C, 1]
-        
-        # 5. Distribution entropy (global uncertainty)
-        entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1, keepdim=True)  # [B, 1]
-        entropy_feature = entropy.unsqueeze(-1).expand(-1, num_classes, -1)  # [B, C, 1]
-        
-        # Concatenate all features
-        features = torch.cat([
-            prob_feature,
-            rank_feature, 
-            relative_feature,
-            log_prob_feature,
-            entropy_feature
-        ], dim=-1)  # [B, C, 5]
-        
-        return features
+        return full_context
     
     def forward(self, probs):
         """
-        Simple learnable scoring function.
+        Full softmax learnable scoring function.
         
-        Strategy: MLP learns optimal scoring from essential features.
-        Simple, principled approach without complex training dynamics.
+        Strategy: MLP sees entire probability distribution for each class.
+        Pure end-to-end learning without feature engineering.
         """
         # Ensure input has correct shape
         if probs.dim() == 1:
@@ -148,20 +131,17 @@ class ScoringFunction(nn.Module):
         if num_classes != self.num_classes:
             raise ValueError(f"Expected {self.num_classes} classes, got {num_classes}")
         
-        # Extract features for MLP to learn from
-        features = self.compute_features(probs)  # [B, C, 5]
-        features_flat = features.view(batch_size * num_classes, -1)  # [B*C, 5]
+        # Prepare full softmax context for each class
+        full_context = self.prepare_full_softmax_input(probs)  # [B, C, C]
+        context_flat = full_context.reshape(batch_size * num_classes, -1)  # [B*C, C]
         
-        # Let MLP learn the scoring function directly
-        raw_scores = self.scoring_network(features_flat)  # [B*C, 1]
+        # MLP processes full probability distribution for each class
+        raw_scores = self.scoring_network(context_flat)  # [B*C, 1]
         scores = raw_scores.view(batch_size, num_classes)  # [B, C]
         
-        # Apply activation to ensure positive scores for conformal prediction
-        # Use ReLU + small offset to ensure scores > 0
-        scores = F.relu(scores) + 0.01
-        
-        # Optional: Add upper bound to prevent extreme scores
-        scores = torch.clamp(scores, 0.01, 10.0)
+        # Apply sigmoid to constrain outputs to (0,1) then scale up
+        # This gives more dynamic range while keeping scores positive
+        scores = torch.sigmoid(scores) * 10.0 + 0.01
         
         # L2 regularization
         if self.training:
