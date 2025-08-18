@@ -50,7 +50,8 @@ class ScoringFunction(nn.Module):
         # Core features: prob, rank, relative_to_max, log_prob, entropy
         feature_dim = 5
         
-        # Clean MLP architecture
+        # Ultra-stable MLP architecture - much smaller and simpler
+        hidden_dims = [64, 32]  # Much smaller network
         layers = []
         prev_dim = feature_dim
         
@@ -58,7 +59,7 @@ class ScoringFunction(nn.Module):
             layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
                 nn.ReLU(),
-                nn.Dropout(0.1)
+                nn.Dropout(0.2)  # Higher dropout for stability
             ])
             prev_dim = hidden_dim
         
@@ -133,16 +134,10 @@ class ScoringFunction(nn.Module):
     
     def forward(self, probs):
         """
-        Core algorithm: Learn to score classes for conformal prediction.
+        Pure learnable scoring function - MLP learns optimal scoring from scratch.
         
-        Goal: Push true classes to low scores (near 0), false classes to high scores.
-        The MLP learns this mapping through the coverage + size loss during training.
-        
-        Args:
-            probs: [B, C] softmax probabilities from base model
-            
-        Returns:
-            scores: [B, C] learned scores for each class
+        Strategy: Let the MLP discover the best scoring function for the specific
+        data distribution. No constraints or baselines - pure learning.
         """
         # Ensure input has correct shape
         if probs.dim() == 1:
@@ -153,29 +148,22 @@ class ScoringFunction(nn.Module):
         if num_classes != self.num_classes:
             raise ValueError(f"Expected {self.num_classes} classes, got {num_classes}")
         
-        # Extract essential features [B, C, 5]
-        features = self.compute_features(probs)
+        # Extract features for MLP to learn from
+        features = self.compute_features(probs)  # [B, C, 5]
+        features_flat = features.view(batch_size * num_classes, -1)  # [B*C, 5]
         
-        # Reshape for MLP: [B*C, 5]
-        features_flat = features.view(batch_size * num_classes, -1)
-        
-        # Learn scores through MLP
+        # Let MLP learn the scoring function directly
         raw_scores = self.scoring_network(features_flat)  # [B*C, 1]
         scores = raw_scores.view(batch_size, num_classes)  # [B, C]
         
-        # Apply activation to ensure proper score range
-        # Use sigmoid to get scores in [0,1] range, then scale appropriately
-        scores = torch.sigmoid(scores)
+        # Apply activation to ensure positive scores for conformal prediction
+        # Use ReLU + small offset to ensure scores > 0
+        scores = F.relu(scores) + 0.01
         
-        # Add a bias toward ranking: higher rank = higher score
-        # This helps with separation between likely and unlikely classes
-        rank_bias = features[:, :, 1] * 2.0  # Rank feature * 2
-        scores = scores + rank_bias
+        # Optional: Add upper bound to prevent extreme scores
+        scores = torch.clamp(scores, 0.01, 10.0)
         
-        # Ensure minimum separation between scores
-        scores = F.softplus(scores) + 0.01
-        
-        # Add L2 regularization for training
+        # L2 regularization
         if self.training:
             l2_reg = sum(torch.sum(param ** 2) for param in self.parameters())
             self.l2_reg = self.l2_lambda * l2_reg

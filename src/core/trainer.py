@@ -929,6 +929,7 @@ class ScoringFunctionTrainer:
         true_scores = np.array(true_scores)
         
         # Find tau at the target coverage quantile
+        # Since we use scores <= tau, we need target_coverage quantile
         tau = np.quantile(true_scores, target_coverage)
         
         return tau
@@ -1038,43 +1039,72 @@ class ScoringFunctionTrainer:
             for i in range(batch_size):
                 true_positions[i] = (sorted_indices[i] == targets[i]).nonzero(as_tuple=True)[0]
             
-            # Core algorithm loss: Simple, stable, effective
+            # Regularization term: penalize if true class is not among top-k
+            # Smooth transition of kreg to avoid sudden changes
+            kreg = 0.2 - 0.02 * min(self.current_epoch - 1, 5)  # 0.2 → 0.1 over 5 epochs
+            reg_term = torch.relu(true_positions.float() - kreg * self.scoring_fn.num_classes).mean()
             
-            # 1. Coverage Loss: Must maintain 90% coverage
+            # Coverage loss
             coverage_indicators = (target_scores <= tau).float()
             coverage = coverage_indicators.mean()
             coverage_loss = (coverage - target_coverage).pow(2)
             
-            # 2. Size Loss: Minimize average set size
+            # Size loss with penalty for large sets
             pred_sets = scores <= tau
             set_sizes = pred_sets.float().sum(dim=1)
             avg_size = set_sizes.mean()
-            size_loss = avg_size  # Simple: just minimize average size
             
-            # 3. Ranking Loss: True class should have lower score than false classes
-            # This is the key insight: push true scores down, false scores up
-            margin = 0.5  # Larger margin for better separation
-            ranking_loss = torch.relu(target_scores.unsqueeze(1) - false_scores + margin).mean()
+            # Quadratic penalty for sets > 2
+            # Smooth transition of lambda
+            lamda = 0.01 + 0.002 * min(self.current_epoch - 1, 5)  # 0.01 → 0.02 over 5 epochs
             
-            # 4. Diversity Loss: Encourage variety in scores to avoid uniformity
-            score_std = scores.std(dim=1).mean()  # Standard deviation across classes
-            diversity_loss = 1.0 / (score_std + 1e-6)  # Encourage higher std dev
+            # Adaptive target based on current performance
+            # Start with larger tolerance and gradually tighten
+            size_target = 2.0 - 0.1 * min(self.current_epoch - 1, 5)  # 2.0 → 1.5 over 5 epochs
+            size_penalty = torch.where(
+                set_sizes > size_target,
+                (set_sizes - size_target).pow(2),
+                torch.zeros_like(set_sizes)
+            ).mean()
+            size_loss = avg_size + lamda * size_penalty
             
-            # Fixed, stable weights - no more erratic changes!
-            coverage_weight = self.lambda1  # From config: 10.0
-            size_weight = self.lambda2      # From config: 2.0 
-            ranking_weight = self.margin_weight  # From config: 0.5
-            diversity_weight = 0.1  # Small weight for diversity
+            # Traditional ranking loss for conformal prediction
+            # For non-conformity scores: target_scores should be LOWER than false_scores
+            margin = 0.1  # Margin for separation
             
-            # Simple combination - let the algorithm learn
+            # Compare target score with statistical measures of false scores
+            false_mean = false_scores.mean(dim=1)  # [batch_size]
+            false_min = false_scores.min(dim=1)[0]  # [batch_size]
+            
+            # Push true classes to have lower scores than false classes
+            # Loss = max(0, target_scores - false_scores + margin)
+            ranking_loss = (
+                torch.relu(target_scores - false_mean + margin).mean() * 0.5 +
+                torch.relu(target_scores - false_min + margin).mean() * 0.5
+            )
+            
+            
+            # Loss weights for traditional conformal prediction
+            coverage_weight = 1.0    # Ensure 90% coverage (primary objective)
+            size_weight = 0.5        # Minimize prediction set sizes
+            ranking_weight = 0.1     # Push true classes below false classes
+            
+            # Balanced combination for conformal prediction
             loss = (
                 coverage_weight * coverage_loss +
                 size_weight * size_loss +
-                ranking_weight * ranking_loss +
-                diversity_weight * diversity_loss
+                ranking_weight * ranking_loss
             )
             
-            # Add L2 regularization to prevent overfitting
+            # Add stability loss if available
+            if hasattr(self.scoring_fn, 'stability_loss'):
+                loss = loss + self.scoring_fn.stability_loss
+            
+            # Add separation loss if available
+            if hasattr(self.scoring_fn, 'separation_loss'):
+                loss = loss + self.scoring_fn.separation_loss
+            
+            # Add L2 regularization if available
             if hasattr(self.scoring_fn, 'l2_reg'):
                 loss = loss + self.scoring_fn.l2_reg
             

@@ -16,5 +16,5 @@
         "**/plots/**": true,
         "**/results/**": true
     },
-    "python.defaultInterpreterPath": "/home/divake/miniconda3/envs/env_cu121/bin/python"
+    "python.defaultInterpreterPath": "python"
 }
