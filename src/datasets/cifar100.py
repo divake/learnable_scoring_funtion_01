@@ -223,7 +223,8 @@ class Dataset(BaseDataset):
                 device = self.config['device']
             state_dict = torch.load(
                 os.path.join(self.config['base_dir'], pretrained_path),
-                map_location=device
+                map_location=device,
+                weights_only=True
             )
             model.load_state_dict(state_dict)
             logging.info(f"Loaded pretrained ViT weights from {pretrained_path}")

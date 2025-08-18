@@ -28,7 +28,7 @@ model:
     
   # ViT configuration (used when type: vit)
   vit:
-    architecture: vit_base_patch16_224_in21k
+    architecture: vit_base_patch16_224.augreg_in21k
     pretrained_path: models/vit_cifar100.pth
     img_size: 96
     drop_path_rate: 0.1

@@ -395,8 +395,8 @@ class ScoringFunctionTrainer:
             if not os.path.exists(probs_path) or not os.path.exists(targets_path):
                 raise FileNotFoundError(f"Cache files for {name} dataset not found")
                 
-            probs = torch.load(probs_path)
-            targets = torch.load(targets_path)
+            probs = torch.load(probs_path, weights_only=True)
+            targets = torch.load(targets_path, weights_only=True)
             
             # Create dataset
             dataset = TensorDataset(probs, targets)
