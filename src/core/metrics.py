@@ -50,6 +50,7 @@ def compute_tau(cal_loader, scoring_fn, base_model, device, coverage_target=0.9,
     sorted_scores, _ = torch.sort(all_scores)
     
     # Compute index for the desired quantile
+    # Since we use scores <= tau, we need coverage_target quantile
     # Use ceiling instead of floor to ensure we meet or exceed target coverage
     idx = int(np.ceil(coverage_target * len(sorted_scores))) - 1
     idx = max(0, min(idx, len(sorted_scores) - 1))  # Safety bounds check

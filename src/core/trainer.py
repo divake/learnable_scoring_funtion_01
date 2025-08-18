@@ -929,6 +929,7 @@ class ScoringFunctionTrainer:
         true_scores = np.array(true_scores)
         
         # Find tau at the target coverage quantile
+        # Since we use scores <= tau, we need target_coverage quantile
         tau = np.quantile(true_scores, target_coverage)
         
         return tau
@@ -1067,42 +1068,32 @@ class ScoringFunctionTrainer:
             ).mean()
             size_loss = avg_size + lamda * size_penalty
             
-            # Soft margin ranking loss (reduced weight)
-            margin = 0.5
-            ranking_loss = torch.relu(target_scores.unsqueeze(1) - false_scores + margin).mean()
+            # Traditional ranking loss for conformal prediction
+            # For non-conformity scores: target_scores should be LOWER than false_scores
+            margin = 0.1  # Margin for separation
+            
+            # Compare target score with statistical measures of false scores
+            false_mean = false_scores.mean(dim=1)  # [batch_size]
+            false_min = false_scores.min(dim=1)[0]  # [batch_size]
+            
+            # Push true classes to have lower scores than false classes
+            # Loss = max(0, target_scores - false_scores + margin)
+            ranking_loss = (
+                torch.relu(target_scores - false_mean + margin).mean() * 0.5 +
+                torch.relu(target_scores - false_min + margin).mean() * 0.5
+            )
             
             
-            # Smooth adaptive loss weighting based on epoch
-            # Gradually transition weights to avoid sudden jumps
-            epoch_factor = min(1.0, (self.current_epoch - 1) / 5.0)  # 0 to 1 over first 5 epochs
+            # Loss weights for traditional conformal prediction
+            coverage_weight = 1.0    # Ensure 90% coverage (primary objective)
+            size_weight = 0.5        # Minimize prediction set sizes
+            ranking_weight = 0.1     # Push true classes below false classes
             
-            # Coverage weight: start high (20) and gradually reduce to 10
-            coverage_weight = 20.0 - 10.0 * epoch_factor
-            
-            # Size weight: start low (1) and gradually increase to 5
-            size_weight = 1.0 + 4.0 * epoch_factor
-            
-            # Ranking weight: start low (0.2) and gradually increase to 1
-            ranking_weight = 0.2 + 0.8 * epoch_factor
-            
-            # Reg term weight: constant at 1.5
-            reg_weight = 1.5
-            
-            # Coverage-aware dynamic adjustment
-            # If coverage is good, focus more on size reduction
-            if abs(coverage.item() - target_coverage) < 0.01:  # Within 1% of target
-                size_weight *= 1.5
-                coverage_weight *= 0.8
-            elif coverage.item() < target_coverage - 0.02:  # More than 2% below target
-                coverage_weight *= 1.5
-                size_weight *= 0.5
-            
-            # Combined loss with smooth weights
+            # Balanced combination for conformal prediction
             loss = (
                 coverage_weight * coverage_loss +
                 size_weight * size_loss +
-                ranking_weight * ranking_loss +
-                reg_weight * reg_term
+                ranking_weight * ranking_loss
             )
             
             # Add stability loss if available
