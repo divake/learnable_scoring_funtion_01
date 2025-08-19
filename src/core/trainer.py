@@ -744,24 +744,61 @@ class ScoringFunctionTrainer:
             for i in range(batch_size):
                 true_positions[i] = (sorted_indices[i] == targets[i]).nonzero(as_tuple=True)[0]
             
-            # Simple, principled loss function for conformal prediction
+            # NEW: Phase-based training strategy
+            # Phase 1: Discrimination loss only (epochs 1-10)
+            # Phase 2: Add coverage loss (epochs 11-20)  
+            # Phase 3: Add size loss (epochs 21-30)
             
-            # 1. Coverage Loss (Primary) - Ensure 90% coverage
+            current_epoch = getattr(self, 'current_epoch', 1)
+            
+            # PRIMARY: Margin-based discrimination loss
+            # Explicitly teach: true_class_score < false_class_scores by margin δ
+            delta = 0.8  # Fixed margin for separation
+            
+            true_scores = target_scores  # Scores for true classes [B]
+            
+            # Get all false class scores for each sample
+            batch_size = scores.shape[0]
+            false_scores_list = []
+            for i in range(batch_size):
+                # Mask to exclude true class
+                false_mask = torch.ones(scores.shape[1], dtype=torch.bool, device=scores.device)
+                false_mask[targets[i]] = False
+                false_scores = scores[i][false_mask]  # [C-1] false class scores
+                false_scores_list.append(false_scores.mean())  # Mean of false scores
+            
+            false_scores_mean = torch.stack(false_scores_list)  # [B]
+            
+            # Margin loss: ReLU(true_score - false_score_mean + δ)
+            # This encourages: true_score < false_score_mean - δ
+            margin = true_scores - false_scores_mean + delta
+            discrimination_loss = torch.relu(margin).mean()
+            
+            # Compute basic metrics for all phases
             coverage_indicators = (target_scores <= tau).float()
             coverage = coverage_indicators.mean()
-            coverage_loss = (coverage - target_coverage).pow(2)
-            
-            # 2. Size Loss (Efficiency) - Minimize prediction set sizes
             pred_sets = scores <= tau
             set_sizes = pred_sets.float().sum(dim=1)
             avg_size = set_sizes.mean()
-            size_loss = avg_size
             
-            # Simple 2-component loss - let MLP learn separation itself
-            loss = (
-                1.0 * coverage_loss +    # Primary: ensure 90% coverage
-                0.5 * size_loss          # Secondary: minimize set size
-            )
+            # Phase-based loss combination
+            if current_epoch <= 10:
+                # Phase 1: ONLY discrimination loss
+                loss = discrimination_loss
+                coverage_loss = torch.tensor(0.0, device=scores.device)
+                size_loss = torch.tensor(0.0, device=scores.device)
+                
+            elif current_epoch <= 20:
+                # Phase 2: Discrimination + Coverage
+                coverage_loss = (coverage - target_coverage).pow(2)
+                loss = discrimination_loss + 0.1 * coverage_loss  # Small coverage weight
+                size_loss = torch.tensor(0.0, device=scores.device)
+                
+            else:
+                # Phase 3: All losses
+                coverage_loss = (coverage - target_coverage).pow(2)
+                size_loss = avg_size
+                loss = discrimination_loss + 0.1 * coverage_loss + 0.01 * size_loss
             
             # Add stability loss if available
             if hasattr(self.scoring_fn, 'stability_loss'):
@@ -794,11 +831,18 @@ class ScoringFunctionTrainer:
             optimizer.step()
             
             # Update meters
+            # Store individual loss components for logging
+            self.last_discrimination_loss = discrimination_loss.item()
+            self.last_coverage_loss = coverage_loss.item() if not isinstance(coverage_loss, float) else coverage_loss
+            self.last_size_loss = size_loss.item() if not isinstance(size_loss, float) else size_loss
+            self.current_phase = "Phase 1 (Discrimination)" if current_epoch <= 10 else "Phase 2 (+ Coverage)" if current_epoch <= 20 else "Phase 3 (All losses)"
+            
             loss_meter.update(loss.item())
             coverage_meter.update(coverage.item())
             size_meter.update(avg_size.item())
             
             pbar.set_postfix({
+                'Phase': self.current_phase.split()[0] + self.current_phase.split()[1][1:2],  # "Phase X"
                 'Loss': f'{loss_meter.avg:.3f}',
                 'Coverage': f'{coverage_meter.avg:.3f}',
                 'Size': f'{size_meter.avg:.3f}'

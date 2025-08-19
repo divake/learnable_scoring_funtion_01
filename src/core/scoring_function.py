@@ -46,17 +46,18 @@ class ScoringFunction(nn.Module):
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         
-        # Pure Data-Driven MLP Architecture
-        # Input: [prob_distribution + class_identity] = 2 * num_classes
-        feature_dim = 2 * self.num_classes
+        # NEW: Full Distribution + Global Features Architecture
+        # Input: [all_probabilities + global_features] = C + 5
+        # Global features: entropy, max_prob, top2_gap, top3_mass, gini
+        feature_dim = self.num_classes + 5  # Much more compact than 2*C
         
-        # Much simpler architecture to prevent overfitting
+        # Simpler, more focused architecture for distribution-level learning
         if self.num_classes <= 10:  # CIFAR-10
-            hidden_dims = [64, 32]
+            hidden_dims = [128, 64]
         elif self.num_classes <= 100:  # CIFAR-100  
-            hidden_dims = [128, 64]  # Reduced from [512, 256, 128]
+            hidden_dims = [256, 128]  # Can afford larger due to compact input
         else:  # ImageNet, complex datasets
-            hidden_dims = [256, 128]  # Reduced complexity
+            hidden_dims = [512, 256]  # Rich features enable larger networks
         
         layers = []
         prev_dim = feature_dim
@@ -70,8 +71,8 @@ class ScoringFunction(nn.Module):
             ])
             prev_dim = hidden_dim
         
-        # Output layer - raw scores (no activation)
-        layers.append(nn.Linear(prev_dim, 1))
+        # Output layer - C scores (one per class, no activation)
+        layers.append(nn.Linear(prev_dim, self.num_classes))
         
         self.scoring_network = nn.Sequential(*layers)
         
@@ -92,41 +93,75 @@ class ScoringFunction(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
     
-    def prepare_full_softmax_input(self, probs: torch.Tensor) -> torch.Tensor:
+    def compute_global_features(self, probs: torch.Tensor) -> torch.Tensor:
         """
-        Prepare full softmax distribution as input for each class scoring.
+        Compute global features from the full softmax distribution.
         
-        Key insight: Let MLP see the entire probability distribution PLUS 
-        which class it's scoring. This gives class-specific context.
+        These features capture uncertainty patterns that help the MLP learn
+        meaningful discrimination beyond simple probability ranking.
         
         Args:
             probs: [B, C] probability distributions
             
         Returns:
-            full_context: [B, C, C+1] - for each class, provide full softmax + class indicator
+            features: [B, num_features] global distribution features
         """
         batch_size, num_classes = probs.shape
         
-        # For each class, provide the entire softmax distribution as context
-        full_context = probs.unsqueeze(1).expand(-1, num_classes, -1)  # [B, C, C]
+        # 1. Entropy: -Σ(pᵢ × log(pᵢ))
+        entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=1)  # [B]
         
-        # Add class identity indicators - this is the key fix!
-        # Create one-hot encoding for which class we're scoring
-        class_indicators = torch.eye(num_classes, device=probs.device, dtype=probs.dtype)  # [C, C]
-        class_indicators = class_indicators.unsqueeze(0).expand(batch_size, -1, -1)  # [B, C, C]
+        # 2. Max probability
+        max_prob, _ = torch.max(probs, dim=1)  # [B]
         
-        # Concatenate probability distribution with class identity
-        # Now each class gets: [prob_dist, which_class_am_I]
-        full_context = torch.cat([full_context, class_indicators], dim=-1)  # [B, C, C+C] = [B, C, 2C]
+        # 3. Top-2 gap: p_max - p_second_max
+        sorted_probs, _ = torch.sort(probs, dim=1, descending=True)
+        top2_gap = sorted_probs[:, 0] - sorted_probs[:, 1]  # [B]
         
-        return full_context
+        # 4. Top-3 mass: sum of top-3 probabilities
+        top3_mass = torch.sum(sorted_probs[:, :3], dim=1)  # [B]
+        
+        # 5. Gini coefficient (distribution spread measure)
+        # Sort probabilities for Gini calculation
+        sorted_probs_gini, _ = torch.sort(probs, dim=1)
+        n = num_classes
+        indices = torch.arange(1, n + 1, device=probs.device, dtype=probs.dtype)
+        gini = (2 * torch.sum(indices.unsqueeze(0) * sorted_probs_gini, dim=1) / 
+                (n * torch.sum(sorted_probs_gini, dim=1)) - (n + 1) / n)  # [B]
+        
+        # Stack all features: [B, 5]
+        features = torch.stack([entropy, max_prob, top2_gap, top3_mass, gini], dim=1)
+        
+        return features
+    
+    def prepare_distribution_input(self, probs: torch.Tensor) -> torch.Tensor:
+        """
+        Prepare input using full distribution + global features approach.
+        
+        New design: Instead of class-specific one-hot encoding, we use
+        the complete distribution context with rich uncertainty features.
+        
+        Args:
+            probs: [B, C] probability distributions
+            
+        Returns:
+            input_features: [B, C + num_features] combined input
+        """
+        # Compute global uncertainty features
+        global_features = self.compute_global_features(probs)  # [B, 5]
+        
+        # Concatenate probability distribution with global features
+        # Input: [all_probs, entropy, max_prob, top2_gap, top3_mass, gini]
+        input_features = torch.cat([probs, global_features], dim=1)  # [B, C + 5]
+        
+        return input_features
     
     def forward(self, probs):
         """
-        Full softmax learnable scoring function.
+        NEW: Full distribution + global features scoring function.
         
-        Strategy: MLP sees entire probability distribution for each class.
-        Pure end-to-end learning without feature engineering.
+        Strategy: MLP sees complete probability distribution plus rich
+        uncertainty features, then outputs one score per class.
         """
         # Ensure input has correct shape
         if probs.dim() == 1:
@@ -137,17 +172,15 @@ class ScoringFunction(nn.Module):
         if num_classes != self.num_classes:
             raise ValueError(f"Expected {self.num_classes} classes, got {num_classes}")
         
-        # Prepare full softmax context for each class
-        full_context = self.prepare_full_softmax_input(probs)  # [B, C, C]
-        context_flat = full_context.reshape(batch_size * num_classes, -1)  # [B*C, C]
+        # NEW: Prepare distribution input with global features
+        input_features = self.prepare_distribution_input(probs)  # [B, C + 5]
         
-        # MLP processes full probability distribution for each class
-        raw_scores = self.scoring_network(context_flat)  # [B*C, 1]
-        scores = raw_scores.view(batch_size, num_classes)  # [B, C]
+        # MLP processes complete distribution context once to get all scores
+        scores = self.scoring_network(input_features)  # [B, C]
         
         # Pure data-driven scoring: let the MLP learn naturally
         # Raw scores - no activation to allow full range of values
-        # scores = scores  # Keep raw MLP outputs
+        # The MLP can now learn rich patterns across the entire distribution
         
         # L2 regularization
         if self.training:
