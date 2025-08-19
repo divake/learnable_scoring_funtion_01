@@ -81,7 +81,7 @@ scoring_function:
 
 # Training constraints
 tau:
-  min: 0.01
+  min: -10.0
   max: 10.0  # Increased to allow higher thresholds when needed
   window_size: 5
 

@@ -10,12 +10,12 @@ from typing import Optional, Tuple, Dict
 class ScoringFunction(nn.Module):
     def __init__(self, input_dim=None, hidden_dims=[256, 128], output_dim=None, config=None):
         """
-        Full Softmax Learnable Scoring Function for Conformal Prediction.
+        Class-Specific Learnable Scoring Function for Conformal Prediction.
         
         Core Algorithm:
         1. Takes softmax probabilities from base model
-        2. For each class, MLP sees ENTIRE probability distribution  
-        3. No feature engineering - pure end-to-end learning
+        2. For each class, MLP sees CLASS-SPECIFIC features (not entire distribution)
+        3. Class-aware feature engineering for discrimination
         4. Training: true classes → low scores, false classes → high scores
         5. Simple loss: coverage + size (no ranking, no scheduling)
         
@@ -46,18 +46,18 @@ class ScoringFunction(nn.Module):
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         
-        # NEW: Full Distribution + Global Features Architecture
-        # Input: [all_probabilities + global_features] = C + 5
-        # Global features: entropy, max_prob, top2_gap, top3_mass, gini
-        feature_dim = self.num_classes + 5  # Much more compact than 2*C
+        # NEW: Class-Specific Architecture
+        # Input per class: [class_prob, rank, gap_to_max, is_top1, is_top3, is_top5, entropy, max_prob]
+        # This is MUCH smaller and more focused than previous C+5 features
+        feature_dim = 8  # 8 class-specific features
         
-        # Simpler, more focused architecture for distribution-level learning
+        # Smaller, more efficient architecture since we have focused features
         if self.num_classes <= 10:  # CIFAR-10
-            hidden_dims = [128, 64]
+            hidden_dims = [32, 16]
         elif self.num_classes <= 100:  # CIFAR-100  
-            hidden_dims = [256, 128]  # Can afford larger due to compact input
+            hidden_dims = [64, 32]  # Much smaller than before
         else:  # ImageNet, complex datasets
-            hidden_dims = [512, 256]  # Rich features enable larger networks
+            hidden_dims = [128, 64]  # Still smaller due to focused features
         
         layers = []
         prev_dim = feature_dim
@@ -67,12 +67,12 @@ class ScoringFunction(nn.Module):
             layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
                 nn.ReLU(),  # Standard activation for reliable learning
-                nn.Dropout(0.5)  # Increased from 0.2 for stronger regularization
+                nn.Dropout(0.3)  # Reduced from 0.5 since we have smaller network
             ])
             prev_dim = hidden_dim
         
-        # Output layer - C scores (one per class, no activation)
-        layers.append(nn.Linear(prev_dim, self.num_classes))
+        # Output layer - single score (no activation)
+        layers.append(nn.Linear(prev_dim, 1))
         
         self.scoring_network = nn.Sequential(*layers)
         
@@ -134,34 +134,68 @@ class ScoringFunction(nn.Module):
         
         return features
     
-    def prepare_distribution_input(self, probs: torch.Tensor) -> torch.Tensor:
+    def prepare_class_specific_features(self, probs: torch.Tensor, class_idx: int) -> torch.Tensor:
         """
-        Prepare input using full distribution + global features approach.
+        Prepare class-specific features for a single class.
         
-        New design: Instead of class-specific one-hot encoding, we use
-        the complete distribution context with rich uncertainty features.
+        Each class gets unique features based on its position in the distribution,
+        allowing the MLP to learn class-aware scoring patterns.
         
         Args:
             probs: [B, C] probability distributions
+            class_idx: Index of the class to extract features for
             
         Returns:
-            input_features: [B, C + num_features] combined input
+            class_features: [B, 8] features specific to this class
         """
-        # Compute global uncertainty features
-        global_features = self.compute_global_features(probs)  # [B, 5]
+        batch_size, num_classes = probs.shape
         
-        # Concatenate probability distribution with global features
-        # Input: [all_probs, entropy, max_prob, top2_gap, top3_mass, gini]
-        input_features = torch.cat([probs, global_features], dim=1)  # [B, C + 5]
+        # 1. Class probability
+        class_prob = probs[:, class_idx:class_idx+1]  # [B, 1]
         
-        return input_features
+        # 2. Rank of this class (1 = highest probability)
+        # Efficient rank computation using argsort twice
+        sorted_indices = torch.argsort(probs, dim=1, descending=True)
+        ranks = torch.zeros_like(probs)
+        # Use scatter to assign ranks efficiently
+        batch_indices = torch.arange(batch_size).unsqueeze(1).expand_as(sorted_indices)
+        rank_values = torch.arange(1, num_classes + 1).unsqueeze(0).expand_as(sorted_indices).to(probs.device)
+        ranks[batch_indices, sorted_indices] = rank_values.float()
+        class_rank = ranks[:, class_idx:class_idx+1] / num_classes  # Normalize by num_classes
+        
+        # 3. Gap to maximum probability
+        max_prob, _ = torch.max(probs, dim=1, keepdim=True)
+        gap_to_max = max_prob - class_prob  # [B, 1]
+        
+        # 4-6. Binary indicators for top-k membership
+        is_top1 = (class_rank <= 1.0/num_classes).float()  # [B, 1]
+        is_top3 = (class_rank <= 3.0/num_classes).float()  # [B, 1]
+        is_top5 = (class_rank <= 5.0/num_classes).float()  # [B, 1]
+        
+        # 7-8. Global context features (same for all classes but provides context)
+        entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=1, keepdim=True)  # [B, 1]
+        max_prob_global = max_prob  # [B, 1]
+        
+        # Concatenate all features: [B, 8]
+        class_features = torch.cat([
+            class_prob,      # How confident is this class?
+            class_rank,      # Where does it rank?
+            gap_to_max,      # How far from the best?
+            is_top1,         # Binary indicators
+            is_top3,
+            is_top5,
+            entropy,         # Global uncertainty
+            max_prob_global  # Global confidence
+        ], dim=1)
+        
+        return class_features
     
     def forward(self, probs):
         """
-        NEW: Full distribution + global features scoring function.
+        CLASS-SPECIFIC scoring function.
         
-        Strategy: MLP sees complete probability distribution plus rich
-        uncertainty features, then outputs one score per class.
+        Strategy: Process each class separately with its unique features,
+        allowing the MLP to learn discriminative scoring patterns.
         """
         # Ensure input has correct shape
         if probs.dim() == 1:
@@ -172,15 +206,20 @@ class ScoringFunction(nn.Module):
         if num_classes != self.num_classes:
             raise ValueError(f"Expected {self.num_classes} classes, got {num_classes}")
         
-        # NEW: Prepare distribution input with global features
-        input_features = self.prepare_distribution_input(probs)  # [B, C + 5]
+        # Process each class separately to get class-specific scores
+        all_scores = []
         
-        # MLP processes complete distribution context once to get all scores
-        scores = self.scoring_network(input_features)  # [B, C]
+        for class_idx in range(num_classes):
+            # Extract class-specific features for this class
+            class_features = self.prepare_class_specific_features(probs, class_idx)  # [B, 8]
+            
+            # Get score for this specific class
+            class_score = self.scoring_network(class_features)  # [B, 1]
+            
+            all_scores.append(class_score)
         
-        # Pure data-driven scoring: let the MLP learn naturally
-        # Raw scores - no activation to allow full range of values
-        # The MLP can now learn rich patterns across the entire distribution
+        # Concatenate all class scores: [B, C]
+        scores = torch.cat(all_scores, dim=1)
         
         # L2 regularization
         if self.training:
