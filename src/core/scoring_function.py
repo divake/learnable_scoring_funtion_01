@@ -46,24 +46,31 @@ class ScoringFunction(nn.Module):
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         
-        # Full softmax approach: MLP sees entire probability distribution + class identity
-        # Input dimension = 2 * number of classes (prob_dist + class_indicator)
+        # Pure Data-Driven MLP Architecture
+        # Input: [prob_distribution + class_identity] = 2 * num_classes
         feature_dim = 2 * self.num_classes
         
-        # MLP architecture for full softmax input
-        hidden_dims = [128, 64]  # Larger network for richer input
+        # Much simpler architecture to prevent overfitting
+        if self.num_classes <= 10:  # CIFAR-10
+            hidden_dims = [64, 32]
+        elif self.num_classes <= 100:  # CIFAR-100  
+            hidden_dims = [128, 64]  # Reduced from [512, 256, 128]
+        else:  # ImageNet, complex datasets
+            hidden_dims = [256, 128]  # Reduced complexity
+        
         layers = []
         prev_dim = feature_dim
         
+        # Strong regularization to prevent overfitting
         for hidden_dim in hidden_dims:
             layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(0.2)  # Higher dropout for stability
+                nn.ReLU(),  # Standard activation for reliable learning
+                nn.Dropout(0.5)  # Increased from 0.2 for stronger regularization
             ])
             prev_dim = hidden_dim
         
-        # Output layer - single score per class
+        # Output layer - raw scores (no activation)
         layers.append(nn.Linear(prev_dim, 1))
         
         self.scoring_network = nn.Sequential(*layers)
@@ -77,13 +84,12 @@ class ScoringFunction(nn.Module):
         self._init_weights()
         
     def _init_weights(self):
-        """Initialize weights for stable learning"""
+        """Standard weight initialization for reliable learning"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                # Standard Xavier initialization
-                nn.init.xavier_uniform_(module.weight, gain=1.0)
+                # Xavier initialization for stable gradients
+                nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
-                    # Zero bias for sigmoid to start near 0.5 output
                     nn.init.zeros_(module.bias)
     
     def prepare_full_softmax_input(self, probs: torch.Tensor) -> torch.Tensor:
@@ -139,9 +145,9 @@ class ScoringFunction(nn.Module):
         raw_scores = self.scoring_network(context_flat)  # [B*C, 1]
         scores = raw_scores.view(batch_size, num_classes)  # [B, C]
         
-        # Apply sigmoid to constrain outputs to (0,1) then scale up
-        # This gives more dynamic range while keeping scores positive
-        scores = torch.sigmoid(scores) * 10.0 + 0.01
+        # Pure data-driven scoring: let the MLP learn naturally
+        # Raw scores - no activation to allow full range of values
+        # scores = scores  # Keep raw MLP outputs
         
         # L2 regularization
         if self.training:

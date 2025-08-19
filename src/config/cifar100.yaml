@@ -39,7 +39,7 @@ plot_dir: plots/cifar100
 log_dir: logs/cifar100
 
 # Training parameters
-num_epochs: 15
+num_epochs: 6  # Reduced based on user feedback - 5-6 epochs sufficient
 batch_size: 128
 target_coverage: 0.9
 
@@ -49,16 +49,16 @@ training:
     enabled: true
     max_norm: 0.5
   loss_weights:
-    coverage: 4.0  # lambda1 - increased from 2.0 for better coverage control
-    size: 1.5      # lambda2 - increased from 1.0 for better set size control
-    margin: 0.2    # margin loss weight - reduced from 2 to avoid dominating training
+    coverage: 1.0  # lambda1 - further reduced for stability
+    size: 5.0      # lambda2 - dramatically increased to force small set sizes
+    margin: 0.05   # margin loss weight - minimal for stability
 
 # Optimizer configuration
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.0001  # Further reduced for stability
-    weight_decay: 0.01
+    lr: 0.0001  # Reduced to prevent overfitting
+    weight_decay: 0.05  # Increased for stronger regularization
   scheduler:
     name: 'CosineAnnealingWarmRestarts'  # Better for stable training
     params:
@@ -70,7 +70,7 @@ optimizer:
 scoring_function:
   hidden_dims: [128, 64]  # Increased from [64, 32] for better capacity
   dropout: 0.2
-  l2_lambda: 0.005  # Reduced from 0.01 for less regularization
+  l2_lambda: 0.01  # Increased for stronger regularization to prevent overfitting
   activation:
     name: 'LeakyReLU'
     params:
