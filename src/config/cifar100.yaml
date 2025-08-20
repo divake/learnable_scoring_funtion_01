@@ -7,9 +7,9 @@ device: 1
 # Caching configuration
 cache:
   enabled: true
-  dir: cache  # Will be created under base_dir
-  compression: false  # Whether to use compression for cached files
+  dir: cache
 
+# Dataset specific parameters
 dataset:
   name: cifar100
   num_classes: 100
@@ -17,29 +17,23 @@ dataset:
   mean: [0.5071, 0.4867, 0.4408]
   std: [0.2675, 0.2565, 0.2761]
 
+# Base model configuration
 model:
-  # Choose between 'resnet' or 'vit'
   type: resnet  # Options: 'resnet' or 'vit'
-  
-  # ResNet configuration (used when type: resnet)
   resnet:
-    architecture: resnet18  # timm will load the CIFAR-100 specific version
+    architecture: resnet18
     pretrained_path: models/resnet18_cifar100_hf.pth
-    
-  # ViT configuration (used when type: vit)
   vit:
     architecture: vit_base_patch16_224.augreg_in21k
     pretrained_path: models/vit_cifar100.pth
     img_size: 96
-    drop_path_rate: 0.1
-    drop_rate: 0.1
 
 # Paths
 plot_dir: plots/cifar100
 log_dir: logs/cifar100
 
 # Training parameters
-num_epochs: 30  # Phase-based training: 1-10 discrimination, 11-20 coverage, 21-30 size
+num_epochs: 30
 batch_size: 128
 target_coverage: 0.9
 
@@ -49,58 +43,44 @@ training:
     enabled: true
     max_norm: 0.5
   loss_weights:
-    coverage: 1.0  # lambda1 - further reduced for stability
-    size: 5.0      # lambda2 - dramatically increased to force small set sizes
-    margin: 0.05   # margin loss weight - minimal for stability
+    coverage: 1.0  # Weight for coverage loss
+    size: 5.0      # Weight for set size loss
+    margin: 0.05   # Weight for margin loss
 
 # Optimizer configuration
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.0001  # Reduced to prevent overfitting
-    weight_decay: 0.05  # Increased for stronger regularization
+    lr: 0.0001
+    weight_decay: 0.05
   scheduler:
-    name: 'CosineAnnealingWarmRestarts'  # Better for stable training
+    name: 'CosineAnnealingWarmRestarts'
     params:
-      T_0: 5  # Restart every 5 epochs
-      T_mult: 1  # Keep constant restart period
-      eta_min: 0.00001  # Minimum learning rate
+      T_0: 5
+      T_mult: 1
+      eta_min: 0.00001
 
-# Model architecture
+# Scoring function architecture
 scoring_function:
-  hidden_dims: [128, 64]  # Increased from [64, 32] for better capacity
-  dropout: 0.2
-  l2_lambda: 0.01  # Increased for stronger regularization to prevent overfitting
-  activation:
-    name: 'LeakyReLU'
-    params:
-      negative_slope: 0.1
-  final_activation:
-    name: 'Sigmoid'  # For proper 0-1 range
-    params: {}
+  architecture_mode: 'auto'  # 'auto' selects based on num_classes, 'manual' uses hidden_dims
+  hidden_dims: [64, 32]  # Used only when architecture_mode='manual'
+  dropout: 0.3  # Dropout rate for regularization
+  l2_lambda: 0.01  # L2 regularization strength
+  num_features: 8  # Number of class-specific features
 
-# Training constraints
+# Tau calibration
 tau:
   min: -10.0
-  max: 10.0  # Increased to allow higher thresholds when needed
+  max: 10.0
   window_size: 5
 
 # Set size constraints
 set_size:
   target: 1
-  max: 5      # Increased from 3 for more flexibility with 100 classes
-  margin: 1.5  # Reduced from 5 to avoid excessive penalties
+  max: 5
+  margin: 1.5
 
 # Training dynamics
 training_dynamics:
-  stability_factor: 0.005  # Reduced from 0.02 for less regularization
-  separation_factor: 2.0  # Kept the same
-  perturbation_noise: 0.01
-  coverage_tolerance: 0.02
-  coverage_closeness_threshold: 0.01
-  coverage_deficit_threshold: 0.02
-  size_penalty_boost: 1.5
-  coverage_boost: 2.0
-  xavier_init_gain: 1.0
-  num_workers: 2
-  ece_test_points: 10
+  coverage_tolerance: 0.02  # Acceptable deviation from target coverage
+  ece_test_points: 10  # Number of bins for ECE calculation

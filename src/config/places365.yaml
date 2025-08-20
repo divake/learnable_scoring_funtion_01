@@ -7,22 +7,20 @@ device: 1
 # Caching configuration
 cache:
   enabled: true
-  dir: cache  # Will be created under base_dir
-  compression: false  # Whether to use compression for cached files
+  dir: cache
 
+# Dataset specific parameters
 dataset:
   name: places365
   num_classes: 365
   input_size: [224, 224]
-  mean: [0.485, 0.456, 0.406]  # ImageNet normalization for pretrained models
+  mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
-  train_subset_size: 50000  # Use subset of training data for efficiency
+  train_subset_size: 50000  # Use subset for efficiency
 
+# Base model configuration
 model:
-  # Using ViT model for Places365
   type: vit
-  
-  # ViT configuration
   vit:
     architecture: vit_base_patch16_224
     pretrained_path: models/vit_places365.pth
@@ -35,62 +33,54 @@ plot_dir: plots/places365
 log_dir: logs/places365
 
 # Training parameters
-num_epochs: 15  # More epochs for convergence
+num_epochs: 15
 batch_size: 64
 target_coverage: 0.9
 
-# Training configuration - simplified and stable
+# Training configuration
 training:
   grad_clip:
     enabled: true
-    max_norm: 1.0  # Slightly higher for stability
+    max_norm: 1.0
   loss_weights:
-    coverage: 10.0  # Higher weight for coverage (must hit 90%)
-    size: 2.0       # Moderate weight for size reduction
-    margin: 0.5     # Higher margin loss for better separation
+    coverage: 10.0  # Higher for 365 classes
+    size: 2.0
+    margin: 0.5
 
-# Optimizer configuration - stable learning
+# Optimizer configuration
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.001   # Higher learning rate for faster convergence
+    lr: 0.001
     weight_decay: 0.01
   scheduler:
     name: 'CosineAnnealingWarmRestarts'
     params:
       T_0: 5
       T_mult: 1
-      eta_min: 0.0001  # Higher minimum LR
+      eta_min: 0.00001
 
-# Model architecture - clean and simple
+# Scoring function architecture
 scoring_function:
-  hidden_dims: [256, 128]  # Simple 2-layer MLP
-  dropout: 0.1             # Light dropout
-  l2_lambda: 0.01          # Moderate L2 regularization
+  architecture_mode: 'auto'  # Will use [128, 64] for 365 classes
+  hidden_dims: [128, 64]  # Used only when architecture_mode='manual'
+  dropout: 0.3
+  l2_lambda: 0.01
+  num_features: 8
 
-# Training constraints
+# Tau calibration
 tau:
-  min: 0.01
-  max: 15.0  # Higher max for 365 classes
+  min: -10.0
+  max: 10.0
   window_size: 5
 
 # Set size constraints
 set_size:
   target: 1
-  max: 10      # Higher max for 365 classes
-  margin: 1.5
+  max: 8  # Higher for 365 classes
+  margin: 2.0
 
 # Training dynamics
 training_dynamics:
-  stability_factor: 0.005
-  separation_factor: 2.0
-  perturbation_noise: 0.01
-  permutation_augmentation_prob: 0.5
   coverage_tolerance: 0.02
-  coverage_closeness_threshold: 0.01
-  coverage_deficit_threshold: 0.02
-  size_penalty_boost: 1.5
-  coverage_boost: 2.0
-  xavier_init_gain: 1.0
-  num_workers: 2
   ece_test_points: 10

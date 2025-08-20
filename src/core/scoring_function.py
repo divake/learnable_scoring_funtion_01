@@ -2,9 +2,7 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
-from typing import Optional, Tuple, Dict
 
 
 class ScoringFunction(nn.Module):
@@ -48,28 +46,44 @@ class ScoringFunction(nn.Module):
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         
-        # NEW: Class-Specific Architecture
+        # Class-Specific Architecture
         # Input per class: [class_prob, rank, gap_to_max, is_top1, is_top3, is_top5, entropy, max_prob]
-        # This is MUCH smaller and more focused than previous C+5 features
-        feature_dim = 8  # 8 class-specific features
         
-        # Smaller, more efficient architecture since we have focused features
-        if self.num_classes <= 10:  # CIFAR-10
-            hidden_dims = [32, 16]
-        elif self.num_classes <= 100:  # CIFAR-100  
-            hidden_dims = [64, 32]  # Much smaller than before
-        else:  # ImageNet, complex datasets
-            hidden_dims = [128, 64]  # Still smaller due to focused features
+        # Get feature dimension from config or use default
+        if 'scoring_function' in config_dict and 'num_features' in config_dict['scoring_function']:
+            feature_dim = config_dict['scoring_function']['num_features']
+        else:
+            feature_dim = 8  # Default: 8 class-specific features
+        
+        # Architecture configuration
+        arch_mode = config_dict.get('scoring_function', {}).get('architecture_mode', 'auto')
+        
+        if arch_mode == 'auto':
+            # Auto-select architecture based on number of classes
+            if self.num_classes <= 10:  # Small datasets (e.g., CIFAR-10)
+                hidden_dims = [32, 16]
+            elif self.num_classes <= 100:  # Medium datasets (e.g., CIFAR-100)
+                hidden_dims = [64, 32]
+            elif self.num_classes <= 1000:  # Large datasets (e.g., ImageNet)
+                hidden_dims = [128, 64]
+            else:  # Very large datasets (e.g., PlantNet-300K)
+                hidden_dims = [256, 128]
+        else:
+            # Use manually specified hidden dimensions from config
+            hidden_dims = config_dict['scoring_function']['hidden_dims']
         
         layers = []
         prev_dim = feature_dim
         
-        # Strong regularization to prevent overfitting
+        # Get dropout rate from config
+        dropout_rate = config_dict.get('scoring_function', {}).get('dropout', 0.3)
+        
+        # Build MLP layers with configurable dropout
         for hidden_dim in hidden_dims:
             layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
                 nn.ReLU(),  # Standard activation for reliable learning
-                nn.Dropout(0.3)  # Reduced from 0.5 since we have smaller network
+                nn.Dropout(dropout_rate)  # Configurable dropout rate
             ])
             prev_dim = hidden_dim
         
@@ -78,10 +92,11 @@ class ScoringFunction(nn.Module):
         
         self.scoring_network = nn.Sequential(*layers)
         
-        # L2 regularization - no fallback, must be explicitly defined
-        if 'scoring_function' not in config or 'l2_lambda' not in config['scoring_function']:
-            raise ValueError("config['scoring_function']['l2_lambda'] must be explicitly defined")
-        self.l2_lambda = config['scoring_function']['l2_lambda']
+        # L2 regularization - use from config or default
+        if 'scoring_function' in config_dict and 'l2_lambda' in config_dict['scoring_function']:
+            self.l2_lambda = config_dict['scoring_function']['l2_lambda']
+        else:
+            self.l2_lambda = 0.01  # Default L2 regularization
         
         # Initialize weights
         self._init_weights()
@@ -170,18 +185,3 @@ class ScoringFunction(nn.Module):
             self.l2_reg = 0.0
         
         return scores
-    
-    def get_score_stats(self, x):
-        """
-        Get statistics about the scores for analysis.
-        
-        Returns mean, std, min, max of scores across classes.
-        """
-        scores = self.forward(x)
-        return {
-            'mean': scores.mean(dim=-1),
-            'std': scores.std(dim=-1),
-            'min': scores.min(dim=-1)[0],
-            'max': scores.max(dim=-1)[0],
-            'range': scores.max(dim=-1)[0] - scores.min(dim=-1)[0]
-        }
