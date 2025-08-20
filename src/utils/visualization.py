@@ -30,8 +30,8 @@ def plot_training_curves(epochs, train_losses, train_coverages, train_sizes,
     # Plot loss
     plt.subplot(1, 4, 1)
     plt.plot(epochs, train_losses, label='Training Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
+    plt.xlabel('Epoch', fontweight='bold')
+    plt.ylabel('Loss', fontweight='bold')
     plt.title('Training Loss')
     plt.legend()
     
@@ -40,8 +40,8 @@ def plot_training_curves(epochs, train_losses, train_coverages, train_sizes,
     plt.plot(epochs, train_coverages, label='Train Coverage')
     plt.plot(epochs, val_coverages, label='Val Coverage')
     plt.axhline(y=0.9, color='r', linestyle='--', label='Target')
-    plt.xlabel('Epoch')
-    plt.ylabel('Coverage')
+    plt.xlabel('Epoch', fontweight='bold')
+    plt.ylabel('Coverage', fontweight='bold')
     plt.title('Coverage vs Epoch')
     plt.legend()
     
@@ -52,16 +52,16 @@ def plot_training_curves(epochs, train_losses, train_coverages, train_sizes,
     if val_non_empty_sizes is not None and len(val_non_empty_sizes) > 0:
         plt.plot(epochs[:len(val_non_empty_sizes)], val_non_empty_sizes, 
                 label='Val Non-Empty Set Size', linestyle='--', color='green')
-    plt.xlabel('Epoch')
-    plt.ylabel('Average Set Size')
+    plt.xlabel('Epoch', fontweight='bold')
+    plt.ylabel('Average Set Size', fontweight='bold')
     plt.title('Set Size vs Epoch')
     plt.legend()
     
     # Plot tau values
     plt.subplot(1, 4, 4)
     plt.plot(epochs, tau_values, label='Tau')
-    plt.xlabel('Epoch')
-    plt.ylabel('Tau Value')
+    plt.xlabel('Epoch', fontweight='bold')
+    plt.ylabel('Tau Value', fontweight='bold')
     plt.title('Tau vs Epoch')
     plt.legend()
     
@@ -89,8 +89,8 @@ def plot_score_distributions(true_scores, false_scores, tau, save_dir):
     
     plt.axvline(x=tau, color='r', linestyle='--', label='Tau Threshold')
     
-    plt.xlabel('Non-Conformity Score')
-    plt.ylabel('Density/Frequency')
+    plt.xlabel('Non-Conformity Score', fontweight='bold')
+    plt.ylabel('Density/Frequency', fontweight='bold')
     plt.title('Distribution of Non-Conformity Scores')
     plt.legend()
     
@@ -102,8 +102,8 @@ def plot_set_size_distribution(set_sizes, save_dir):
     plotter.setup()
     
     plt.hist(set_sizes, bins=range(11), align='left', rwidth=0.8)
-    plt.xlabel('Prediction Set Size')
-    plt.ylabel('Count')
+    plt.xlabel('Prediction Set Size', fontweight='bold')
+    plt.ylabel('Count', fontweight='bold')
     plt.title('Distribution of Prediction Set Sizes')
     plt.xticks(range(10))
     
@@ -147,8 +147,8 @@ def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
     plt.subplot(2, 2, 1)
     plt.plot(prob_array, scores_array, 'b-', linewidth=2, label='Learned Scoring Function')
     plt.plot(prob_array, 1 - prob_array, 'r--', linewidth=2, alpha=0.7, label='1-p (APS baseline)')
-    plt.xlabel('Probability')
-    plt.ylabel('Non-conformity Score')
+    plt.xlabel('Probability', fontweight='bold')
+    plt.ylabel('Non-conformity Score', fontweight='bold')
     plt.title('Learned Non-conformity Scoring Function')
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -163,8 +163,8 @@ def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
     difference = scores_array - (1 - prob_array)
     plt.plot(prob_array, difference, 'g-', linewidth=2)
     plt.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-    plt.xlabel('Probability')
-    plt.ylabel('Score Difference from 1-p')
+    plt.xlabel('Probability', fontweight='bold')
+    plt.ylabel('Score Difference from 1-p', fontweight='bold')
     plt.title('Learned Function vs 1-p Baseline')
     plt.grid(True, alpha=0.3)
     plt.xlim(0, 1)
@@ -175,8 +175,8 @@ def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
     gradient = np.gradient(scores_array, prob_array)
     plt.plot(prob_array, gradient, 'purple', linewidth=2, label='Learned Function Gradient')
     plt.axhline(y=-1, color='r', linestyle='--', alpha=0.7, label='1-p Gradient (-1)')
-    plt.xlabel('Probability')
-    plt.ylabel('Gradient (d(score)/d(prob))')
+    plt.xlabel('Probability', fontweight='bold')
+    plt.ylabel('Gradient (d(score)/d(prob))', fontweight='bold')
     plt.title('Scoring Function Gradient')
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -206,8 +206,8 @@ def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
         plt.plot(test_probs, scores_for_class, 'o-', 
                 label=f'Class {class_idx}', markersize=8, linewidth=2)
     
-    plt.xlabel('Probability')
-    plt.ylabel('Non-conformity Score')
+    plt.xlabel('Probability', fontweight='bold')
+    plt.ylabel('Non-conformity Score', fontweight='bold')
     plt.title('Class-Agnostic Behavior Verification')
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -327,8 +327,8 @@ def generate_scoring_curve(scoring_fn, device, save_dir, config):
     ax1.plot(top_class_probs, scores_for_second, 'r--', linewidth=2, label='Second Class', alpha=0.8)
     ax1.plot(top_class_probs[::5], scores_for_low[::5], 'g:', linewidth=2, label='Low Prob Class', alpha=0.8, marker='o', markersize=3)
     
-    ax1.set_xlabel('Softmax Probability', fontsize=12)
-    ax1.set_ylabel('Non-conformity Score', fontsize=12)
+    ax1.set_xlabel('Softmax Probability', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('Non-conformity Score', fontsize=12, fontweight='bold')
     ax1.set_title('Learned Scoring Function', fontsize=14, fontweight='bold')
     ax1.legend(loc='best')
     ax1.axhline(y=0, color='black', linestyle='-', alpha=0.3)
@@ -344,8 +344,8 @@ def generate_scoring_curve(scoring_fn, device, save_dir, config):
     ax2.hist(scores_for_second, bins=20, alpha=0.5, label='Second Class', color='red', edgecolor='black')
     ax2.hist(scores_for_low[::5], bins=20, alpha=0.5, label='Low Prob Class', color='green', edgecolor='black')
     
-    ax2.set_xlabel('Non-conformity Score', fontsize=12)
-    ax2.set_ylabel('Frequency', fontsize=12)
+    ax2.set_xlabel('Non-conformity Score', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('Frequency', fontsize=12, fontweight='bold')
     ax2.set_title('Score Distribution', fontsize=14, fontweight='bold')
     ax2.legend(loc='best')
     
@@ -405,8 +405,8 @@ def generate_separation_analysis(scoring_fn, test_loader, device, save_dir):
     ax1.hist(true_scores, bins=30, alpha=0.6, label='True Class', color='blue', density=True)
     ax1.hist(false_scores[:len(true_scores)*5], bins=30, alpha=0.6, label='False Classes', color='red', density=True)
     ax1.axvline(x=tau, color='green', linestyle='--', linewidth=2, label=f'τ={tau:.3f}')
-    ax1.set_xlabel('Non-conformity Score')
-    ax1.set_ylabel('Density')
+    ax1.set_xlabel('Non-conformity Score', fontweight='bold')
+    ax1.set_ylabel('Density', fontweight='bold')
     ax1.set_title('Score Distribution')
     ax1.legend()
     
@@ -416,8 +416,8 @@ def generate_separation_analysis(scoring_fn, test_loader, device, save_dir):
     ax2.scatter(false_probs[:len(true_probs)*2], false_scores[:len(true_probs)*2], 
                 alpha=0.3, s=10, c='red', label='False Classes')
     ax2.axhline(y=tau, color='green', linestyle='--', linewidth=2, alpha=0.7)
-    ax2.set_xlabel('Softmax Probability')
-    ax2.set_ylabel('Non-conformity Score')
+    ax2.set_xlabel('Softmax Probability', fontweight='bold')
+    ax2.set_ylabel('Non-conformity Score', fontweight='bold')
     ax2.set_title('Score vs Probability')
     ax2.legend()
     
@@ -428,7 +428,7 @@ def generate_separation_analysis(scoring_fn, test_loader, device, save_dir):
     bp['boxes'][0].set_facecolor('lightblue')
     bp['boxes'][1].set_facecolor('lightcoral')
     ax3.axhline(y=tau, color='green', linestyle='--', linewidth=2)
-    ax3.set_ylabel('Non-conformity Score')
+    ax3.set_ylabel('Non-conformity Score', fontweight='bold')
     ax3.set_title('Score Comparison')
     
     # 4. Cumulative distribution
@@ -438,8 +438,8 @@ def generate_separation_analysis(scoring_fn, test_loader, device, save_dir):
     ax4.plot(true_sorted, np.arange(len(true_sorted))/len(true_sorted), 'b-', linewidth=2, label='True')
     ax4.plot(false_sorted, np.arange(len(false_sorted))/len(false_sorted), 'r-', linewidth=2, label='False')
     ax4.axvline(x=tau, color='green', linestyle='--', linewidth=2)
-    ax4.set_xlabel('Non-conformity Score')
-    ax4.set_ylabel('Cumulative Probability')
+    ax4.set_xlabel('Non-conformity Score', fontweight='bold')
+    ax4.set_ylabel('Cumulative Probability', fontweight='bold')
     ax4.set_title('CDF')
     ax4.legend()
     
@@ -453,7 +453,7 @@ def generate_separation_analysis(scoring_fn, test_loader, device, save_dir):
     ax5.axhline(y=tau, color='green', linestyle='--', linewidth=2)
     ax5.set_xticks([1, 2])
     ax5.set_xticklabels(['True', 'False'])
-    ax5.set_ylabel('Non-conformity Score')
+    ax5.set_ylabel('Non-conformity Score', fontweight='bold')
     ax5.set_title('Distribution')
     
     # 6. Statistics
@@ -535,8 +535,8 @@ def generate_performance_metrics(scoring_fn, test_loader, device, save_dir):
     ax1.fill_between(fpr, tpr, alpha=0.3, color='darkorange')
     ax1.set_xlim([0.0, 1.0])
     ax1.set_ylim([0.0, 1.05])
-    ax1.set_xlabel('False Positive Rate')
-    ax1.set_ylabel('True Positive Rate')
+    ax1.set_xlabel('False Positive Rate', fontweight='bold')
+    ax1.set_ylabel('True Positive Rate', fontweight='bold')
     ax1.set_title('ROC Curve')
     ax1.legend(loc="lower right")
     
@@ -546,8 +546,8 @@ def generate_performance_metrics(scoring_fn, test_loader, device, save_dir):
     ax2.fill_between(recall, precision, alpha=0.3, color='darkgreen')
     ax2.set_xlim([0.0, 1.0])
     ax2.set_ylim([0.0, 1.05])
-    ax2.set_xlabel('Recall')
-    ax2.set_ylabel('Precision')
+    ax2.set_xlabel('Recall', fontweight='bold')
+    ax2.set_ylabel('Precision', fontweight='bold')
     ax2.set_title('Precision-Recall Curve')
     ax2.legend(loc="lower left")
     
@@ -566,8 +566,8 @@ def generate_performance_metrics(scoring_fn, test_loader, device, save_dir):
     
     ax3.plot(coverages, set_sizes, 'b-', linewidth=2.5, marker='o', markersize=4)
     ax3.axvline(x=0.9, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Target (90%)')
-    ax3.set_xlabel('Coverage')
-    ax3.set_ylabel('Average Set Size')
+    ax3.set_xlabel('Coverage', fontweight='bold')
+    ax3.set_ylabel('Average Set Size', fontweight='bold')
     ax3.set_title('Coverage vs Set Size Trade-off')
     ax3.legend()
     
@@ -577,8 +577,8 @@ def generate_performance_metrics(scoring_fn, test_loader, device, save_dir):
     min_scores = np.min(all_scores, axis=1)
     
     hexbin = ax4.hexbin(max_probs, min_scores, gridsize=25, cmap='YlOrRd', mincnt=1)
-    ax4.set_xlabel('Max Softmax Probability')
-    ax4.set_ylabel('Min Non-conformity Score')
+    ax4.set_xlabel('Max Softmax Probability', fontweight='bold')
+    ax4.set_ylabel('Min Non-conformity Score', fontweight='bold')
     ax4.set_title('Confidence-Score Correlation')
     plt.colorbar(hexbin, ax=ax4, label='Count')
     
@@ -662,8 +662,8 @@ def generate_set_size_distribution_best(scoring_fn, test_loader, device, save_di
             patch.set_facecolor('gray')
             patch.set_alpha(0.5)
     
-    ax1.set_xlabel('Prediction Set Size', fontsize=12)
-    ax1.set_ylabel('Count', fontsize=12)
+    ax1.set_xlabel('Prediction Set Size', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('Count', fontsize=12, fontweight='bold')
     ax1.set_title('Set Size Distribution', fontsize=14, fontweight='bold')
     ax1.set_xticks(range(0, min(max_size + 1, 21)))
     
@@ -678,8 +678,8 @@ def generate_set_size_distribution_best(scoring_fn, test_loader, device, save_di
     cumulative = np.arange(1, len(sorted_sizes) + 1) / len(sorted_sizes)
     ax2.plot(sorted_sizes, cumulative, 'b-', linewidth=2.5)
     ax2.fill_between(sorted_sizes, 0, cumulative, alpha=0.3)
-    ax2.set_xlabel('Set Size', fontsize=12)
-    ax2.set_ylabel('Cumulative Probability', fontsize=12)
+    ax2.set_xlabel('Set Size', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('Cumulative Probability', fontsize=12, fontweight='bold')
     ax2.set_title('Cumulative Distribution', fontsize=14, fontweight='bold')
     ax2.grid(True, alpha=0.3)
     
@@ -704,7 +704,7 @@ def generate_set_size_distribution_best(scoring_fn, test_loader, device, save_di
     bp['boxes'][0].set_facecolor('white')
     bp['boxes'][0].set_alpha(0.8)
     
-    ax3.set_ylabel('Set Size', fontsize=12)
+    ax3.set_ylabel('Set Size', fontsize=12, fontweight='bold')
     ax3.set_title('Distribution Summary', fontsize=14, fontweight='bold')
     ax3.set_xticks([1])
     ax3.set_xticklabels(['Set Sizes'])
@@ -715,8 +715,8 @@ def generate_set_size_distribution_best(scoring_fn, test_loader, device, save_di
     percentile_values = [np.percentile(set_sizes, p) for p in percentile_range]
     ax4.plot(percentile_range, percentile_values, 'b-', linewidth=2.5)
     ax4.fill_between(percentile_range, 0, percentile_values, alpha=0.3)
-    ax4.set_xlabel('Percentile', fontsize=12)
-    ax4.set_ylabel('Set Size', fontsize=12)
+    ax4.set_xlabel('Percentile', fontsize=12, fontweight='bold')
+    ax4.set_ylabel('Set Size', fontsize=12, fontweight='bold')
     ax4.set_title('Set Size by Percentile', fontsize=14, fontweight='bold')
     ax4.grid(True, alpha=0.3)
     
@@ -835,8 +835,8 @@ def generate_unified_scoring(scoring_fn, device, save_dir, config):
     ax1.plot(probabilities[:50], scores_rank2[:50], 'r--', linewidth=2.5, label='Learned: Rank 2', alpha=0.8)
     ax1.plot(probabilities, baseline_1_minus_p, 'k:', linewidth=2, label='Baseline: 1-p', alpha=0.6)
     
-    ax1.set_xlabel('Class Probability', fontsize=12)
-    ax1.set_ylabel('Non-conformity Score', fontsize=12)
+    ax1.set_xlabel('Class Probability', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('Non-conformity Score', fontsize=12, fontweight='bold')
     ax1.set_title('Unified Scoring Function', fontsize=14, fontweight='bold')
     ax1.legend(loc='upper right')
     ax1.axhline(y=0, color='gray', linestyle='-', alpha=0.3)
@@ -856,8 +856,8 @@ def generate_unified_scoring(scoring_fn, device, save_dir, config):
              np.array(scores_rank2)[valid_rank2] - baseline_1_minus_p[valid_rank2], 
              'r--', linewidth=2.5, label='Rank 2 vs 1-p', alpha=0.8)
     
-    ax2.set_xlabel('Class Probability', fontsize=12)
-    ax2.set_ylabel('Score Difference from 1-p', fontsize=12)
+    ax2.set_xlabel('Class Probability', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('Score Difference from 1-p', fontsize=12, fontweight='bold')
     ax2.set_title('Deviation from Static Baseline', fontsize=14, fontweight='bold')
     ax2.legend(loc='best')
     ax2.axhline(y=0, color='black', linestyle='-', alpha=0.5, linewidth=1.5)

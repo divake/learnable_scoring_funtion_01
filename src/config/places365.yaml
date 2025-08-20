@@ -16,6 +16,7 @@ dataset:
   input_size: [224, 224]
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
+  data_dir: data/places365_small
   train_subset_size: 50000  # Use subset for efficiency
 
 # Base model configuration

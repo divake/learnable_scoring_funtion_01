@@ -123,7 +123,11 @@ class Dataset(BaseDataset):
     
     def setup(self):
         """Setup ImageNet dataset with transforms and splits"""
-        dataset_base_path = self.config['data_dir']
+        # Use dataset-specific data_dir from config
+        dataset_base_path = self.config['dataset']['data_dir']
+        if not os.path.isabs(dataset_base_path):
+            dataset_base_path = os.path.join(self.config['base_dir'], dataset_base_path)
+        
         train_path = os.path.join(dataset_base_path, 'train')
         val_path = os.path.join(dataset_base_path, 'val')
         

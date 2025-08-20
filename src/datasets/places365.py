@@ -130,7 +130,10 @@ class Dataset(BaseDataset):
     def setup(self):
         """Setup Places365 dataset with transforms and splits"""
         # Get data paths from config
-        data_dir = os.path.join(self.config['base_dir'], 'data/places365_small')
+        data_dir = self.config.get('dataset', {}).get('data_dir', 'data/places365_small')
+        # Construct full path from base_dir if data_dir is relative
+        if not os.path.isabs(data_dir):
+            data_dir = os.path.join(self.config['base_dir'], data_dir)
             
         # Check for data directories
         train_img_dir = os.path.join(data_dir, 'data_256_standard')

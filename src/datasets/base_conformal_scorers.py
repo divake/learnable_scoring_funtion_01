@@ -33,6 +33,8 @@ import concurrent.futures
 from sklearn.metrics import roc_curve, auc, roc_auc_score
 from sklearn.preprocessing import label_binarize
 from src.core.advanced_metrics import calculate_auroc, plot_roc_curve
+from src.utils.static_visualization import generate_all_static_visualizations
+from src.core.cache_generator import HighQualityCacheGenerator
 
 # ==================== Registry System ====================
 
@@ -292,97 +294,81 @@ class BaseScorer(ABC):
         self._load_cached_outputs()
     
     def _load_cached_outputs(self):
-        """Load cached model outputs if available."""
-        # Determine model type from config
-        model_config = self.config.get('model', {})
+        """Load cached model outputs using the same HighQualityCacheGenerator as learnable scoring."""
         dataset_name = self.config['dataset']['name']
         
         logging.info(f"Checking for cached outputs for {dataset_name} dataset...")
         
-        # Check if there's an explicit 'type' field
-        if 'type' in model_config:
-            model_type_str = model_config['type'].lower()
-            if model_type_str == 'vit':
-                model_type = 'VisionTransformer'
-            elif model_type_str == 'resnet':
-                model_type = 'ResNet'
-            else:
-                raise ValueError(f"Unknown model type: {model_type_str}. Expected 'vit' or 'resnet'")
-        else:
-            # For datasets without explicit type field, derive from architecture
-            model_arch = model_config.get('architecture')
-            if not model_arch:
-                raise ValueError("Model configuration must have either 'type' or 'architecture' field")
+        try:
+            # Create cache generator using the same approach as learnable scoring
+            cache_generator = HighQualityCacheGenerator(
+                base_model=self.model,
+                config=self.config,
+                device=self.device
+            )
             
-            if 'vit' in model_arch.lower() or 'vision' in model_arch.lower():
-                model_type = 'VisionTransformer'
-            elif 'resnet' in model_arch.lower():
-                model_type = 'ResNet'
-            else:
-                raise ValueError(f"Cannot determine model type from architecture: {model_arch}")
-        
-        # Special handling for datasets with custom model classes
-        if dataset_name == 'ham10000' and model_type == 'VisionTransformer':
-            # Check if ViTForHAM10000 cache exists in nested structure
-            nested_cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / dataset_name / 'ViTForHAM10000'
-            if nested_cache_dir.exists():
-                cache_dir = nested_cache_dir
-                logging.info(f"Using HAM10000-specific cache directory: {cache_dir}")
-            else:
-                cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / model_type
-        elif dataset_name == 'plantnet' and model_type == 'VisionTransformer':
-            # Check for ViTWrapper cache (PlantNet uses a wrapper class)
-            vitwrapper_cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / dataset_name / 'ViTWrapper'
-            if vitwrapper_cache_dir.exists():
-                cache_dir = vitwrapper_cache_dir
-                logging.info(f"Using PlantNet ViTWrapper cache directory: {cache_dir}")
-            else:
-                # Fallback to standard VisionTransformer path
-                cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / model_type
-        else:
-            cache_dir = Path(self.config['base_dir']) / 'cache' / dataset_name / model_type
-        
-        # Log which model type is being used
-        logging.info(f"Using model type: {model_type} (cache dir: {cache_dir})")
-        
-        if cache_dir.exists():
-            try:
-                # First try to load model_outputs.pth (single file format)
-                model_outputs_path = cache_dir / 'model_outputs.pth'
-                if model_outputs_path.exists():
-                    cached_outputs = torch.load(model_outputs_path, weights_only=False)
-                    self.cached_data['cal_probs'] = cached_outputs['cal_probs']
-                    self.cached_data['cal_targets'] = cached_outputs['cal_targets']
-                    self.cached_data['test_probs'] = cached_outputs['test_probs']
-                    self.cached_data['test_targets'] = cached_outputs['test_targets']
-                    logging.info(f"Loaded cached model outputs from {model_outputs_path}")
-                else:
-                    # Fall back to separate file format
-                    # Load calibration data
-                    cal_probs_path = cache_dir / 'cal_probs.pt'
-                    cal_targets_path = cache_dir / 'cal_targets.pt'
-                    if cal_probs_path.exists() and cal_targets_path.exists():
-                        self.cached_data['cal_probs'] = torch.load(cal_probs_path)
-                        self.cached_data['cal_targets'] = torch.load(cal_targets_path)
-                        logging.info(f"Loaded cached calibration outputs from {cache_dir}")
-                        
-                    # Load test data
-                    test_probs_path = cache_dir / 'test_probs.pt'
-                    test_targets_path = cache_dir / 'test_targets.pt'
-                    if test_probs_path.exists() and test_targets_path.exists():
-                        self.cached_data['test_probs'] = torch.load(test_probs_path)
-                        self.cached_data['test_targets'] = torch.load(test_targets_path)
-                        logging.info(f"Loaded cached test outputs from {cache_dir}")
+            # Get the cache path using the same method as learnable scoring
+            cache_path = cache_generator._get_cache_path()
+            logging.info(f"Using HighQualityCacheGenerator cache path: {cache_path}")
+            
+            # Check if cache exists and is valid
+            if cache_generator._is_cache_valid(cache_path):
+                # Load cache using the same method as learnable scoring
+                cached_loaders = cache_generator.load_cache(cache_path)
+                
+                # Extract the data from the cached loaders
+                # Process calibration data
+                if 'cal' in cached_loaders:
+                    cal_loader = cached_loaders['cal']
+                    cal_probs_list = []
+                    cal_targets_list = []
                     
+                    for batch in cal_loader:
+                        if len(batch) == 3:  # probs, features, targets
+                            probs, _, targets = batch
+                        else:  # probs, targets
+                            probs, targets = batch
+                        cal_probs_list.append(probs)
+                        cal_targets_list.append(targets)
+                    
+                    self.cached_data['cal_probs'] = torch.cat(cal_probs_list, dim=0)
+                    self.cached_data['cal_targets'] = torch.cat(cal_targets_list, dim=0)
+                    logging.info(f"Loaded calibration cache: {len(self.cached_data['cal_targets'])} samples")
+                
+                # Process test data
+                if 'test' in cached_loaders:
+                    test_loader = cached_loaders['test']
+                    test_probs_list = []
+                    test_targets_list = []
+                    
+                    for batch in test_loader:
+                        if len(batch) == 3:  # probs, features, targets
+                            probs, _, targets = batch
+                        else:  # probs, targets
+                            probs, targets = batch
+                        test_probs_list.append(probs)
+                        test_targets_list.append(targets)
+                    
+                    self.cached_data['test_probs'] = torch.cat(test_probs_list, dim=0)
+                    self.cached_data['test_targets'] = torch.cat(test_targets_list, dim=0)
+                    logging.info(f"Loaded test cache: {len(self.cached_data['test_targets'])} samples")
+                
                 if self.cached_data:
                     self.use_cache = True
-                    logging.info("Using cached model outputs for fair comparison")
-            except Exception as e:
-                logging.warning(f"Failed to load cached outputs: {e}. Will use direct model inference.")
+                    logging.info("Successfully loaded cached outputs using HighQualityCacheGenerator")
+                else:
+                    logging.info("No cached data found in loaders")
+                    self.use_cache = False
+            else:
+                logging.info(f"No valid cache found at {cache_path}. Will use direct model inference.")
                 self.use_cache = False
                 self.cached_data = {}
-        else:
-            logging.info(f"Cache directory {cache_dir} not found. Will use direct model inference.")
+                
+        except Exception as e:
+            logging.warning(f"Failed to load cache using HighQualityCacheGenerator: {str(e)}")
+            logging.warning("Will use direct model inference instead")
+            self.use_cache = False
+            self.cached_data = {}
     
     @abstractmethod
     def compute_nonconformity_score(self, probabilities: torch.Tensor, targets: torch.Tensor) -> List[float]:
@@ -466,124 +452,8 @@ class BaseScorer(ABC):
             self.tau = np.percentile(nonconformity_scores, 100 * (1 - self.target_coverage))
             logging.info(f"Calibration complete. Tau value: {self.tau:.4f} (higher scores are better)")
         
-        # Store nonconformity scores for plotting
-        self.nonconformity_scores = nonconformity_scores
-        
-        # Plot the scoring function
-        self.plot_scoring_function()
-        
         return self.tau
     
-    def plot_scoring_function(self) -> None:
-        """
-        Plot the scoring function based on calibration data.
-        This shows the distribution of nonconformity scores and the threshold tau.
-        """
-        if not hasattr(self, 'nonconformity_scores') or self.nonconformity_scores is None:
-            logging.warning("No nonconformity scores available. Run calibration first.")
-            return
-        
-        dataset_name = self.config['dataset']['name']
-        
-        plt.figure(figsize=(10, 6))
-        
-        # Plot histogram of nonconformity scores
-        sns.histplot(self.nonconformity_scores, kde=True, bins=50)
-        
-        # Add vertical line for tau
-        plt.axvline(x=self.tau, color='r', linestyle='--', 
-                   label=f'τ = {self.tau:.4f} (target coverage: {self.target_coverage:.2f})')
-        
-        # Add labels and title
-        plt.xlabel('Nonconformity Score')
-        plt.ylabel('Frequency')
-        plt.title(f'{self.__class__.__name__} Scoring Function Distribution - {dataset_name}')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Save the plot
-        plot_path = os.path.join(self.plot_dir, f'{self.__class__.__name__}_{dataset_name}_scoring_function.png')
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        logging.info(f"Scoring function plot saved to {plot_path}")
-    
-    def plot_score_distributions(self, true_class_scores: List[float], false_class_scores: List[float]) -> None:
-        """
-        Plot the distribution of non-conformity scores for true and false classes.
-        This helps visualize how well the scoring function separates correct from incorrect predictions.
-        
-        Args:
-            true_class_scores: List of non-conformity scores for true classes
-            false_class_scores: List of non-conformity scores for false classes
-        """
-        dataset_name = self.config['dataset']['name']
-        
-        plt.figure(figsize=(10, 6))
-        
-        # Set style similar to the provided image
-        plt.style.use('seaborn-v0_8-whitegrid')
-        
-        # Plot distributions with lines instead of filled areas
-        sns.kdeplot(true_class_scores, label='True Class Scores', color='blue')
-        sns.kdeplot(false_class_scores, label='False Class Scores', color='orange')
-        
-        # Add vertical line for tau
-        plt.axvline(x=self.tau, color='red', linestyle='--', 
-                   label='Tau Threshold')
-        
-        # Add labels and title
-        plt.xlabel('Non-Conformity Score')
-        plt.ylabel('Density/Frequency')
-        plt.title('Distribution of Conformity Scores')
-        
-        # Add legend with custom position
-        plt.legend(loc="upper left")
-        
-        # Set axis limits based on data (filter out inf values)
-        true_finite = [s for s in true_class_scores if not np.isinf(s)]
-        false_finite = [s for s in false_class_scores if not np.isinf(s)]
-        
-        if true_finite or false_finite:
-            min_score = min(min(true_finite) if true_finite else 0, 
-                            min(false_finite) if false_finite else 0)
-            max_score = max(max(true_finite) if true_finite else 1, 
-                            max(false_finite) if false_finite else 1)
-            plt.xlim(min_score - 0.2, max_score + 0.2)
-        
-        # Save the plot
-        plot_path = os.path.join(self.plot_dir, f'{self.__class__.__name__}_{dataset_name}_score_distribution.png')
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        logging.info(f"Score distribution plot saved to {plot_path}")
-    
-    def plot_roc_curve(self, y_true: np.ndarray, y_scores: np.ndarray) -> None:
-        """
-        Plot the ROC curve for the model using the imported function.
-        
-        Args:
-            y_true: Ground truth labels
-            y_scores: Predicted probabilities
-        """
-        dataset_name = self.config['dataset']['name']
-        
-        try:
-            # Create the plot
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            # Use the imported function that now handles multi-class data properly
-            plot_roc_curve(y_true, y_scores, title=f'Receiver Operating Characteristic - {dataset_name}', ax=ax)
-            
-            # Save the plot
-            plot_path = os.path.join(self.plot_dir, f'{self.__class__.__name__}_{dataset_name}_roc_curve.png')
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            
-            logging.info(f"ROC curve plot saved to {plot_path}")
-        except Exception as e:
-            logging.warning(f"Could not plot ROC curve: {str(e)}")
-            logging.warning("This is non-critical and the evaluation will continue.")
     
     def evaluate(self) -> Dict[str, Any]:
         """
@@ -739,6 +609,13 @@ class BaseScorer(ABC):
         # Use the scoring-specific AUROC
         auroc = score_auroc
         
+        # Calculate efficiency (coverage/set_size ratio)
+        efficiency = empirical_coverage / average_set_size if average_set_size > 0 else 0.0
+        
+        # Calculate additional metrics for visualization
+        quantile_05 = np.percentile(set_sizes, 5) if set_sizes else 0
+        quantile_95 = np.percentile(set_sizes, 95) if set_sizes else 0
+        
         # Debug: print set size distribution
         set_size_counts = np.bincount(set_sizes)
         logging.info(f"Set size distribution:")
@@ -771,6 +648,14 @@ class BaseScorer(ABC):
             "empty_sets": empty_sets,
             "empty_set_percentage": empty_set_percentage,
             "average_set_size_with_empty": average_set_size_with_empty,
+            # Add data for high-quality visualizations
+            "set_sizes": set_sizes,
+            "true_class_scores": true_class_scores,
+            "false_class_scores": false_class_scores,
+            "num_classes": self.dataset.num_classes if hasattr(self.dataset, 'num_classes') else probabilities.size(1),
+            "efficiency": efficiency,
+            "quantile_05": quantile_05,
+            "quantile_95": quantile_95,
         }
         
         logging.info(f"Evaluation Results for {self.config['dataset']['name']} with {self.__class__.__name__}:")
@@ -783,19 +668,6 @@ class BaseScorer(ABC):
         logging.info(f"  Median Set Size: {median_set_size:.4f}")
         logging.info(f"  AUROC (scoring function): {auroc:.4f}")
         logging.info(f"  AUROC (base model): {base_auroc:.4f}")
-        
-        # Plot score distributions
-        self.plot_score_distributions(true_class_scores, false_class_scores)
-        
-        # Plot ROC curve using the same parameters used for score_auroc calculation
-        # Prepare the same scores used for AUROC calculation
-        plot_scores = score_matrix.copy()
-        if self.lower_is_better():
-            # If lower scores are better, use the same transformation as in calculate_auroc
-            # This ensures the plot is consistent with the AUROC calculation
-            plot_scores = -plot_scores if np.max(np.abs(plot_scores)) > 1.1 else 1.0 - plot_scores
-            
-        self.plot_roc_curve(all_true_labels, plot_scores)
         
         return results
 
@@ -1554,6 +1426,15 @@ def create_unified_csv_summary(dataset_results: Dict[str, Dict[str, Any]], datas
         
         logging.info(f"Unified CSV summary saved to {csv_file}")
         logging.info(f"Readable JSON summary saved to {json_summary_file}")
+        
+        # Generate high-quality visualizations for all static scorers
+        try:
+            logging.info(f"Generating high-quality visualizations for {dataset_name}...")
+            generate_all_static_visualizations(dataset_name, base_output_dir)
+            logging.info(f"High-quality visualizations completed for {dataset_name}")
+        except Exception as e:
+            logging.error(f"Failed to generate visualizations: {str(e)}")
+            logging.error(f"Traceback: {traceback.format_exc()}")
         logging.info(f"Individual JSON results saved in {base_output_dir}")
 
 def create_comparison_report(results: Dict[str, Dict[str, Dict[str, Any]]], output_dir: str, target_coverage: float = 0.9) -> Dict[str, str]:
@@ -2098,7 +1979,9 @@ def main():
                 status = "ERROR"
                 coverage = "N/A"
                 avg_size = "N/A"
+                avg_size_with_empty = "N/A"
                 auroc = "N/A"
+                empty_pct = 0.0
             else:
                 status = "SUCCESS"
                 coverage = results.get("empirical_coverage", "N/A")
@@ -2117,7 +2000,7 @@ def main():
                     auroc = f"{auroc:.4f}"
                     
             # Show both set size metrics
-            set_size_str = f"{avg_size_with_empty} ({avg_size})"
+            set_size_str = f"{avg_size_with_empty} ({avg_size})" if avg_size != "N/A" else "N/A"
             empty_str = f"{empty_pct:.1f}%" if isinstance(empty_pct, float) else "N/A"
             logging.info(f"{dataset:<10} | {scoring:<10} | {coverage:<10} | {set_size_str:<20} | {empty_str:<8} | {auroc:<10} | {status:<10}")
     

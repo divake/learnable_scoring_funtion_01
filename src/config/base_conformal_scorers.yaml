@@ -2,6 +2,20 @@
 device: 1  # GPU=0/1 and CPU=-1
 target_coverage: 0.9
 
+# Cache configuration - using same as learnable scoring for consistency
+cache:
+  enabled: true
+  dir: cache
+
+# Training dynamics (needed for cache generator compatibility)
+training_dynamics:
+  stability_factor: 0.05
+  coverage_tolerance: 0.02
+  coverage_boost: 2.0
+  size_penalty_boost: 1.5
+  ece_test_points: 10
+  num_workers: 4
+
 # Directory paths
 data_dir: data  # Directory where datasets are stored
 base_dir: .     # Base directory for relative paths

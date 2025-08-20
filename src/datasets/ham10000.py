@@ -95,6 +95,10 @@ class Dataset(BaseDataset):
     def setup(self):
         """Setup HAM10000 dataset with proper validation split for conformal prediction"""
         data_dir = self.config.get('dataset', {}).get('data_dir', 'data/ham10000')
+        # Construct full path from base_dir if data_dir is relative
+        if not os.path.isabs(data_dir):
+            data_dir = os.path.join(self.config['base_dir'], data_dir)
+        
         img_dir = os.path.join(data_dir, 'images')
         splits_dir = os.path.join(data_dir, 'splits')
         

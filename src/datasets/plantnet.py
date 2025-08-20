@@ -55,6 +55,9 @@ class Dataset(BaseDataset):
         
         # Setup paths
         self.data_dir = config['dataset']['data_dir']
+        # Construct full path from base_dir if data_dir is relative
+        if not os.path.isabs(self.data_dir):
+            self.data_dir = os.path.join(config['base_dir'], self.data_dir)
         self.images_dir = os.path.join(self.data_dir, 'images')
         
         # Load species mapping

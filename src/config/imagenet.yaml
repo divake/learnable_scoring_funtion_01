@@ -2,7 +2,7 @@
 inherit: base_config.yaml
 
 # Device configuration
-device: 0
+device: 1
 
 # Caching configuration
 cache:
