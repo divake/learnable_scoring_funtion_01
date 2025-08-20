@@ -244,7 +244,7 @@ class ScoringFunctionTrainer:
         df.to_csv(csv_path, index=False)
         logging.debug(f"Updated metrics CSV: {csv_path}")
     
-    def _save_model(self, val_coverage, val_size, best_set_size, save_dir, epoch):
+    def _save_model(self, val_coverage, val_size, best_set_size, save_dir, epoch, test_loader):
         """
         Save model based on validation metrics.
         Only saves when coverage is between 88-92% and set size is smaller than previous best.
@@ -256,6 +256,7 @@ class ScoringFunctionTrainer:
             best_set_size: Previous best set size
             save_dir: Directory to save model
             epoch: Current epoch number
+            test_loader: Test data loader for visualization generation
             
         Returns:
             Tuple of (updated best_set_size, saved_filename or None)
@@ -297,6 +298,19 @@ class ScoringFunctionTrainer:
                 
                 # Store the filename for the final summary
                 self.best_model_filename = model_filename
+                
+                # Generate high-quality visualizations for best model
+                best_model_plot_dir = os.path.join(self.plot_dir, 'best_model_perf')
+                logging.info(f"Generating high-quality visualizations in {best_model_plot_dir}")
+                
+                from src.utils.visualization import generate_best_model_visualizations
+                generate_best_model_visualizations(
+                    self.scoring_fn, 
+                    test_loader, 
+                    self.config,
+                    best_model_plot_dir
+                )
+                logging.info("High-quality visualizations generated successfully")
                 
                 return val_size, model_filename
         else:
@@ -422,6 +436,9 @@ class ScoringFunctionTrainer:
     
     def train(self, num_epochs, target_coverage, tau_config, set_size_config, save_dir, plot_dir):
         """Main training loop"""
+        # Store plot_dir as instance variable for use in other methods
+        self.plot_dir = plot_dir
+        
         # Cache base model outputs at the beginning
         if not self.is_cached and self.use_cache:
             self.cache_base_model_outputs()
@@ -490,7 +507,7 @@ class ScoringFunctionTrainer:
             
             # Save best model based on validation metrics
             best_set_size, saved_filename = self._save_model(
-                val_coverage, val_size, best_set_size, save_dir, epoch + 1
+                val_coverage, val_size, best_set_size, save_dir, epoch + 1, self.test_loader
             )
         
         # Save final metrics to CSV
@@ -614,26 +631,39 @@ class ScoringFunctionTrainer:
         from sklearn.metrics import roc_auc_score
         auroc = roc_auc_score(labels_flat, scores_flat)
         
-        # 2. ECE for conformal prediction:
-        # Measure calibration at different coverage levels
-        # This is different from traditional ECE
+        # 2. ECE for MLP conformal prediction:
+        # Measure calibration across different coverage levels
+        # This tests if our MLP gives proper coverage at various confidence levels
         num_points = self._get_required_config('training_dynamics', 'ece_test_points')
-        target_coverages = np.linspace(0.1, 0.99, num_points)  # Configurable test points
+        target_coverages = np.linspace(0.5, 0.99, num_points)  # Test from 50% to 99% coverage
         actual_coverages = []
         
+        # First, get calibration scores to find taus
+        cal_true_scores = []
+        with torch.no_grad():
+            for inputs, targets in self.cal_loader:
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+                scores = self.scoring_fn(inputs)
+                batch_size = targets.shape[0]
+                true_scores = scores[torch.arange(batch_size), targets]
+                cal_true_scores.extend(true_scores.cpu().numpy())
+        cal_true_scores = np.array(cal_true_scores)
+        
+        # For each target coverage, find tau and test
         for target_cov in target_coverages:
-            # Find tau that should give this coverage on calibration set
-            tau_for_coverage = self._find_tau_for_coverage(target_cov)
+            # Find tau on calibration set
+            tau_for_coverage = np.percentile(cal_true_scores, target_cov * 100)
             
             # Measure actual coverage on test set
-            pred_sets = all_scores <= tau_for_coverage
             coverage = 0
             for i, true_label in enumerate(all_true_labels):
-                if pred_sets[i, true_label]:
+                if all_scores[i, true_label] <= tau_for_coverage:
                     coverage += 1
             actual_coverages.append(coverage / len(all_true_labels))
         
-        # ECE is the average absolute difference between target and actual coverage
+        # ECE is the mean absolute difference between target and actual coverage
+        # This measures how well calibrated our MLP scoring function is
         ece = np.mean(np.abs(np.array(target_coverages) - np.array(actual_coverages)))
         
         return auroc, ece
