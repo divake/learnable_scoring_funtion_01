@@ -683,8 +683,17 @@ def analyze_epoch_metrics(epochs: List[int],
     # If coverage and size are provided, find optimal trade-off
     if coverage_values and size_values:
         # Define a simple trade-off metric: coverage / set_size
-        trade_off = np.array(coverage_values) / np.array(size_values)
-        best_trade_off_idx = np.argmax(trade_off)
+        # Handle division by zero by replacing with NaN
+        with np.errstate(divide='ignore', invalid='ignore'):
+            trade_off = np.array(coverage_values) / np.array(size_values)
+        # Find best trade-off, ignoring NaN values
+        valid_indices = ~np.isnan(trade_off)
+        if np.any(valid_indices):
+            valid_trade_off = trade_off[valid_indices]
+            valid_epochs = np.array(epochs)[valid_indices]
+            best_trade_off_idx = np.where(valid_indices)[0][np.argmax(valid_trade_off)]
+        else:
+            best_trade_off_idx = 0
         
         results['best_trade_off'] = {
             'epoch': epochs[best_trade_off_idx],

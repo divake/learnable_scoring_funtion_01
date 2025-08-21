@@ -244,7 +244,7 @@ class ScoringFunctionTrainer:
         df.to_csv(csv_path, index=False)
         logging.debug(f"Updated metrics CSV: {csv_path}")
     
-    def _save_model(self, val_coverage, val_size, best_set_size, save_dir, epoch, test_loader):
+    def _save_model(self, val_coverage, val_size, best_set_size, save_dir, epoch, test_loader, tau):
         """
         Save model based on validation metrics.
         Only saves when coverage is between 88-92% and set size is smaller than previous best.
@@ -308,7 +308,8 @@ class ScoringFunctionTrainer:
                     self.scoring_fn, 
                     test_loader, 
                     self.config,
-                    best_model_plot_dir
+                    best_model_plot_dir,
+                    tau
                 )
                 logging.info("High-quality visualizations generated successfully")
                 
@@ -507,7 +508,7 @@ class ScoringFunctionTrainer:
             
             # Save best model based on validation metrics
             best_set_size, saved_filename = self._save_model(
-                val_coverage, val_size, best_set_size, save_dir, epoch + 1, self.test_loader
+                val_coverage, val_size, best_set_size, save_dir, epoch + 1, self.test_loader, tau
             )
         
         # Save final metrics to CSV
@@ -811,24 +812,24 @@ class ScoringFunctionTrainer:
             set_sizes = pred_sets.float().sum(dim=1)
             avg_size = set_sizes.mean()
             
-            # Phase-based loss combination
+            # Phase-based loss combination with configurable weights
             if current_epoch <= 10:
                 # Phase 1: ONLY discrimination loss
-                loss = discrimination_loss
+                loss = discrimination_loss * self.margin_weight
                 coverage_loss = torch.tensor(0.0, device=scores.device)
                 size_loss = torch.tensor(0.0, device=scores.device)
                 
             elif current_epoch <= 20:
                 # Phase 2: Discrimination + Coverage
                 coverage_loss = (coverage - target_coverage).pow(2)
-                loss = discrimination_loss + 0.1 * coverage_loss  # Small coverage weight
+                loss = discrimination_loss * self.margin_weight + self.lambda1 * coverage_loss
                 size_loss = torch.tensor(0.0, device=scores.device)
                 
             else:
-                # Phase 3: All losses
+                # Phase 3: All losses with configured weights
                 coverage_loss = (coverage - target_coverage).pow(2)
                 size_loss = avg_size
-                loss = discrimination_loss + 0.1 * coverage_loss + 0.01 * size_loss
+                loss = discrimination_loss * self.margin_weight + self.lambda1 * coverage_loss + self.lambda2 * size_loss
             
             # Add stability loss if available
             if hasattr(self.scoring_fn, 'stability_loss'):

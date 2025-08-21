@@ -232,7 +232,7 @@ def plot_scoring_function_behavior(scoring_fn, device, plot_dir):
     plotter.save(plot_dir, 'scoring_function.png')
 
 
-def generate_best_model_visualizations(scoring_fn, test_loader, config, plot_dir):
+def generate_best_model_visualizations(scoring_fn, test_loader, config, plot_dir, tau):
     """
     Generate high-quality visualizations for the best model.
     Called only when a new best model is saved.
@@ -242,6 +242,7 @@ def generate_best_model_visualizations(scoring_fn, test_loader, config, plot_dir
         test_loader: Test data loader
         config: Configuration dict
         plot_dir: Directory to save plots (should be plots/{dataset}/best_model_perf/)
+        tau: The calibrated tau value from training
     """
     import os
     import seaborn as sns
@@ -278,14 +279,14 @@ def generate_best_model_visualizations(scoring_fn, test_loader, config, plot_dir
     # 2. Generate true/false separation analysis
     generate_separation_analysis(scoring_fn, test_loader, device, plot_dir)
     
-    # 3. Generate performance metrics
-    generate_performance_metrics(scoring_fn, test_loader, device, plot_dir)
+    # 3. Generate performance metrics (with tau for proper set size calculation)
+    generate_performance_metrics(scoring_fn, test_loader, device, plot_dir, tau)
     
     # 4. Generate unified scoring function
     generate_unified_scoring(scoring_fn, device, plot_dir, config)
     
-    # 5. Generate set size distribution
-    generate_set_size_distribution_best(scoring_fn, test_loader, device, plot_dir)
+    # 5. Generate set size distribution (with tau from training)
+    generate_set_size_distribution_best(scoring_fn, test_loader, device, plot_dir, tau)
 
 
 def generate_scoring_curve(scoring_fn, device, save_dir, config):
@@ -394,7 +395,8 @@ def generate_separation_analysis(scoring_fn, test_loader, device, save_dir):
                 false_scores.append(all_scores[i, j])
                 false_probs.append(all_probs[i, j])
     
-    # Calculate tau for 90% coverage
+    # Calculate tau for visualization purposes (just for the threshold line)
+    # This is OK since it's only for showing where the threshold would be
     tau = np.percentile(true_scores, 90)
     
     # Create figure
@@ -484,7 +486,7 @@ Separation:
     plt.close()
 
 
-def generate_performance_metrics(scoring_fn, test_loader, device, save_dir):
+def generate_performance_metrics(scoring_fn, test_loader, device, save_dir, tau=None):
     """Generate performance metrics visualization"""
     import torch
     from sklearn.metrics import roc_curve, auc, precision_recall_curve
@@ -593,7 +595,7 @@ def generate_performance_metrics(scoring_fn, test_loader, device, save_dir):
     plt.close()
 
 
-def generate_set_size_distribution_best(scoring_fn, test_loader, device, save_dir):
+def generate_set_size_distribution_best(scoring_fn, test_loader, device, save_dir, tau):
     """Generate set size distribution for the best model with detailed statistics"""
     import torch
     import numpy as np
@@ -616,9 +618,9 @@ def generate_set_size_distribution_best(scoring_fn, test_loader, device, save_di
     n_samples = len(all_labels)
     n_classes = all_scores.shape[1]
     
-    # Calculate tau for 90% coverage on true labels
-    true_scores = [all_scores[i, all_labels[i]] for i in range(n_samples)]
-    tau = np.percentile(true_scores, 90)
+    # Use the tau from training (already calibrated on calibration set)
+    # This ensures consistency with the reported metrics during training
+    tau = float(tau)  # Ensure it's a scalar
     
     # Calculate set sizes for each sample
     set_sizes = []

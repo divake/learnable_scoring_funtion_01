@@ -80,7 +80,11 @@ set_size:
   max: 5
   margin: 1.5
 
-# Training dynamics
+# Training dynamics - Critical for stability
 training_dynamics:
+  stability_factor: 0.05  # Controls loss stability
   coverage_tolerance: 0.02  # Acceptable deviation from target coverage
+  coverage_boost: 2.0  # Boost coverage loss when below target
+  size_penalty_boost: 1.5  # Boost size penalty when coverage is good
   ece_test_points: 10  # Number of bins for ECE calculation
+  num_workers: 4  # For parallel data loading

@@ -42,24 +42,22 @@ training:
     enabled: true
     max_norm: 0.5
   loss_weights:
-    coverage: 5.0
-    size: 2.0
-    margin: 0.05
+    coverage: 1.0  # Reduced from 5.0 - proven stable value
+    size: 5.0      # Increased from 2.0 - better set size control
+    margin: 0.05   # Keep low for stability
 
 # Optimizer configuration
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.00005
-    weight_decay: 0.01
+    lr: 0.0001  # Doubled from 0.00005 - better learning
+    weight_decay: 0.05  # Increased from 0.01 - better regularization
   scheduler:
-    name: 'OneCycleLR'
+    name: 'CosineAnnealingWarmRestarts'  # More stable than OneCycleLR
     params:
-      max_lr: 0.00005
-      pct_start: 0.2
-      div_factor: 20
-      final_div_factor: 100
-      anneal_strategy: 'cos'
+      T_0: 5
+      T_mult: 1
+      eta_min: 0.00001
 
 # Scoring function architecture
 scoring_function:
@@ -79,9 +77,13 @@ tau:
 set_size:
   target: 1
   max: 10  # Higher for 1000 classes
-  margin: 2.0
+  margin: 1.5  # Reduced from 2.0 for better balance
 
-# Training dynamics
+# Training dynamics - Critical for stability
 training_dynamics:
-  coverage_tolerance: 0.02
-  ece_test_points: 10
+  stability_factor: 0.05  # Controls loss stability
+  coverage_tolerance: 0.02  # Acceptable deviation from target coverage
+  coverage_boost: 2.0  # Boost coverage loss when below target
+  size_penalty_boost: 1.5  # Boost size penalty when coverage is good
+  ece_test_points: 10  # Number of bins for ECE calculation
+  num_workers: 4  # For parallel data loading

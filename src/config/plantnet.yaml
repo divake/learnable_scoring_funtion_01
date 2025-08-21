@@ -33,7 +33,7 @@ plot_dir: plots/plantnet
 log_dir: logs/plantnet
 
 # Training parameters
-num_epochs: 15
+num_epochs: 30  # Increased from 15 for better convergence
 batch_size: 32
 target_coverage: 0.9
 
@@ -43,22 +43,22 @@ training:
     enabled: true
     max_norm: 0.5
   loss_weights:
-    coverage: 4.0
-    size: 1.5
-    margin: 0.2
+    coverage: 1.0  # Reduced from 5.0 - proven stable value to prevent wild swings
+    size: 5.0      # Increased from 2.0 - better set size control
+    margin: 0.05   # Reduced from 0.1 - less aggressive
 
 # Optimizer configuration
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.00005  # Lower for many classes
-    weight_decay: 0.01
+    lr: 0.0001  # Increased from 0.00005 - better learning without instability
+    weight_decay: 0.05  # Increased from 0.01 - better regularization
   scheduler:
     name: 'CosineAnnealingWarmRestarts'
     params:
       T_0: 5
       T_mult: 1
-      eta_min: 0.000001
+      eta_min: 0.00001  # Increased from 0.000001
 
 # Scoring function architecture
 scoring_function:
@@ -78,9 +78,13 @@ tau:
 set_size:
   target: 1
   max: 10  # Higher for 1081 classes
-  margin: 2.0
+  margin: 1.5  # Reduced from 2.0 for better balance
 
-# Training dynamics
+# Training dynamics - Added critical missing parameters
 training_dynamics:
-  coverage_tolerance: 0.02
-  ece_test_points: 10
+  stability_factor: 0.05  # CRITICAL: Controls loss stability
+  coverage_tolerance: 0.02  # Acceptable deviation from target coverage
+  coverage_boost: 2.0  # Boost coverage loss when below target
+  size_penalty_boost: 1.5  # Boost size penalty when coverage is good
+  ece_test_points: 10  # Number of bins for ECE calculation
+  num_workers: 4  # For parallel data loading

@@ -44,16 +44,16 @@ training:
     enabled: true
     max_norm: 1.0
   loss_weights:
-    coverage: 1.0
-    size: 3.0
-    margin: 0.1
+    coverage: 1.0  # Already at stable value
+    size: 5.0      # Increased from 3.0 - better set size control
+    margin: 0.05   # Reduced from 0.1 - less aggressive
 
 # Optimizer configuration
 optimizer:
   name: 'AdamW'
   params:
-    lr: 0.0001
-    weight_decay: 0.01
+    lr: 0.0001  # Already at stable value
+    weight_decay: 0.05  # Increased from 0.01 - better regularization
   scheduler:
     name: 'CosineAnnealingWarmRestarts'
     params:
@@ -81,7 +81,11 @@ set_size:
   max: 3
   margin: 1.5
 
-# Training dynamics
+# Training dynamics - Critical for stability
 training_dynamics:
-  coverage_tolerance: 0.02
-  ece_test_points: 10
+  stability_factor: 0.05  # Controls loss stability
+  coverage_tolerance: 0.02  # Acceptable deviation from target coverage
+  coverage_boost: 2.0  # Boost coverage loss when below target
+  size_penalty_boost: 1.5  # Boost size penalty when coverage is good
+  ece_test_points: 10  # Number of bins for ECE calculation
+  num_workers: 4  # For parallel data loading
